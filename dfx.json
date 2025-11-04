@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "canisters": {
+    "stablecoin": {
+      "type": "custom",
+      "candid": "canisters/stablecoin/stablecoin.did",
+      "wasm": "canisters/target/wasm32-unknown-unknown/release/stablecoin.wasm",
+      "build": "bash scripts/build_rust_canister.sh stablecoin",
+      "metadata": [
+        {
+          "name": "candid:service",
+          "path": "canisters/stablecoin/stablecoin.did"
+        }
+      ]
+    },
+    "frontend": {
+      "type": "assets",
+      "source": [
+        "frontend/dist"
+      ],
+      "build": [
+        "bash",
+        "-lc",
+        "npm run build --prefix frontend"
+      ]
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "--release"
+    }
+  },
+  "output_env_file": ".dfx/local/canister_ids.env"
+}
