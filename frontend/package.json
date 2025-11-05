@@ -10,16 +10,20 @@
     "clean": "rimraf dist"
   },
   "dependencies": {
+    "@dfinity/agent": "^0.20.0",
+    "@dfinity/candid": "^0.20.0",
+    "@dfinity/principal": "^0.20.0",
+    "sats-connect": "^3.5.0",
+    "buffer": "^6.0.3",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
+    "rimraf": "^5.0.5",
     "typescript": "^5.3.3",
     "vite": "^5.0.8",
-    "@vitejs/plugin-react": "^4.2.0",
-    "rimraf": "^5.0.5"
+    "@vitejs/plugin-react": "^4.2.0"
   }
 }
-
