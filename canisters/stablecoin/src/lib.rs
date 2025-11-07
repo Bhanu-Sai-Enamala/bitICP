@@ -1,4 +1,4 @@
-use candid::{CandidType, Func, Nat};
+use candid::{CandidType, Func, Nat, Principal};
 use ic_cdk::api::management_canister::http_request::{
     http_request, CanisterHttpRequestArgument, HttpHeader, HttpMethod, HttpResponse,
     TransformArgs, TransformContext, TransformFunc,
@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 
 const HTTP_CYCLES_COST: u128 = 2_000_000_000_000; // 2T cycles (~0.2T min) per request baseline
+const XRC_DEFAULT_CYCLES_BUDGET: u128 = 1_000_000_000_000; // start generous; trim after measuring
 
 #[derive(Clone, Default, CandidType, Deserialize, Serialize)]
 struct BackendConfig {
@@ -18,8 +19,32 @@ struct BackendConfig {
     api_key: Option<String>,
 }
 
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+struct CollateralParams {
+    /// ratio in basis points (e.g., 13_000 = 130%)
+    ratio_bps: u16,
+    /// mint amount in USD cents (e.g., 2_000 = $20)
+    usd_cents: u32,
+}
+
+impl Default for CollateralParams {
+    fn default() -> Self {
+        Self { ratio_bps: 13_000, usd_cents: 2_000 }
+    }
+}
+
+#[derive(Clone, Default, CandidType, Deserialize, Serialize)]
+struct Settings {
+    backend: BackendConfig,
+    /// Optional XRC canister id. When None, price querying is disabled.
+    xrc_canister_id: Option<Principal>,
+    /// Cycles budget to attach to each XRC call
+    xrc_cycles_budget: u128,
+    collateral: CollateralParams,
+}
+
 thread_local! {
-    static SETTINGS: RefCell<BackendConfig> = RefCell::new(BackendConfig::default());
+    static SETTINGS: RefCell<Settings> = RefCell::new(Settings { backend: BackendConfig::default(), xrc_canister_id: None, xrc_cycles_budget: XRC_DEFAULT_CYCLES_BUDGET, collateral: CollateralParams::default() });
 }
 
 #[init]
@@ -29,14 +54,23 @@ fn init() {
 
 #[pre_upgrade]
 fn pre_upgrade() {
-    let config = SETTINGS.with(|settings| settings.borrow().clone());
-    stable_save((config,)).expect("failed to save settings");
+    let cfg = SETTINGS.with(|s| s.borrow().clone());
+    stable_save((cfg,)).expect("failed to save settings");
 }
 
 #[post_upgrade]
 fn post_upgrade() {
-    if let Ok((config,)) = stable_restore::<(BackendConfig,)>() {
-        SETTINGS.with(|settings| *settings.borrow_mut() = config);
+    // Try restore new layout first; fall back to legacy BackendConfig-only
+    if let Ok((cfg,)) = stable_restore::<(Settings,)>() {
+        SETTINGS.with(|s| *s.borrow_mut() = cfg);
+        return;
+    }
+    if let Ok((legacy_backend,)) = stable_restore::<(BackendConfig,)>() {
+        SETTINGS.with(|s| {
+            let mut tmp = Settings::default();
+            tmp.backend = legacy_backend;
+            *s.borrow_mut() = tmp;
+        });
     }
 }
 
@@ -57,7 +91,7 @@ fn ping() -> String {
 
 #[query]
 fn get_backend_config() -> BackendConfig {
-    SETTINGS.with(|settings| settings.borrow().clone())
+    SETTINGS.with(|settings| settings.borrow().backend.clone())
 }
 
 #[update]
@@ -67,10 +101,135 @@ fn set_backend_config(base_url: String, api_key: Option<String>) {
     }
 
     SETTINGS.with(|settings| {
-        let mut cfg = settings.borrow_mut();
-        cfg.base_url = base_url;
-        cfg.api_key = api_key;
+        let mut st = settings.borrow_mut();
+        st.backend.base_url = base_url;
+        st.backend.api_key = api_key;
     });
+}
+
+// ===== XRC bindings (minimal) =====
+
+#[derive(Clone, Debug, CandidType, Deserialize, Serialize)]
+enum XrcAssetClass {
+    Cryptocurrency,
+    FiatCurrency,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, Serialize)]
+struct XrcAsset {
+    symbol: String,
+    class: XrcAssetClass,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, Serialize)]
+struct XrcGetExchangeRateRequest {
+    base_asset: XrcAsset,
+    quote_asset: XrcAsset,
+    timestamp: Option<u64>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, Serialize)]
+struct XrcExchangeRateMetadata {
+    decimals: u32,
+    base_asset_num_received_rates: u64,
+    base_asset_num_queried_sources: u64,
+    quote_asset_num_received_rates: u64,
+    quote_asset_num_queried_sources: u64,
+    standard_deviation: u64,
+    forex_timestamp: Option<u64>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, Serialize)]
+struct XrcExchangeRate {
+    base_asset: XrcAsset,
+    quote_asset: XrcAsset,
+    timestamp: u64,
+    rate: u64,
+    metadata: XrcExchangeRateMetadata,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, Serialize)]
+enum XrcExchangeRateError {
+    AnonymousPrincipalNotAllowed,
+    Pending,
+    CryptoBaseAssetNotFound,
+    CryptoQuoteAssetNotFound,
+    StablecoinRateNotFound,
+    StablecoinRateTooFewRates,
+    StablecoinRateZeroRate,
+    ForexInvalidTimestamp,
+    ForexBaseAssetNotFound,
+    ForexQuoteAssetNotFound,
+    ForexAssetsNotFound,
+    RateLimited,
+    NotEnoughCycles,
+    FailedToAcceptCycles,
+    InconsistentRatesReceived,
+    Other { code: u32, description: String },
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, Serialize)]
+enum XrcGetExchangeRateResult {
+    Ok(XrcExchangeRate),
+    Err(XrcExchangeRateError),
+}
+
+async fn xrc_btc_usd_price() -> Result<f64, String> {
+    let (xrc_id, budget) = SETTINGS.with(|s| {
+        let st = s.borrow();
+        (st.xrc_canister_id, st.xrc_cycles_budget)
+    });
+    let xrc_id = xrc_id.ok_or_else(|| "xrc_not_configured".to_string())?;
+    let req = XrcGetExchangeRateRequest {
+        base_asset: XrcAsset { symbol: "BTC".into(), class: XrcAssetClass::Cryptocurrency },
+        quote_asset: XrcAsset { symbol: "USD".into(), class: XrcAssetClass::FiatCurrency },
+        timestamp: None,
+    };
+    let (result,): (XrcGetExchangeRateResult,) = ic_cdk::api::call::call_with_payment128(
+        xrc_id,
+        "get_exchange_rate",
+        (req,),
+        budget,
+    ).await.map_err(|(code,msg)| format!("xrc_call_error {:?}: {}", code, msg))?;
+
+    match result {
+        XrcGetExchangeRateResult::Ok(rate) => {
+            let price = (rate.rate as f64) / 10f64.powi(rate.metadata.decimals as i32);
+            if price <= 0.0 { return Err("price_unavailable".into()); }
+            Ok(price)
+        }
+        XrcGetExchangeRateResult::Err(err) => Err(format!("xrc_returned_error: {:?}", err)),
+    }
+}
+
+#[update]
+fn set_xrc_config(xrc_id: Principal) {
+    SETTINGS.with(|s| s.borrow_mut().xrc_canister_id = Some(xrc_id));
+}
+
+#[update]
+fn set_collateral_params(ratio_bps: u16, usd_cents: u32) {
+    SETTINGS.with(|s| {
+        let mut st = s.borrow_mut();
+        st.collateral.ratio_bps = ratio_bps;
+        st.collateral.usd_cents = usd_cents;
+    });
+}
+
+#[derive(CandidType, Deserialize, Serialize)]
+struct CollateralPreview { price: f64, sats: u64, ratio_bps: u16, usd_cents: u32 }
+
+#[update]
+async fn get_collateral_preview() -> Result<CollateralPreview, String> {
+    let price = xrc_btc_usd_price().await?;
+    let (ratio_bps, usd_cents) = SETTINGS.with(|s| {
+        let st = s.borrow();
+        (st.collateral.ratio_bps, st.collateral.usd_cents)
+    });
+    let usd = (usd_cents as f64) / 100.0;
+    let ratio = (ratio_bps as f64) / 10_000.0;
+    let sats = ((usd * ratio / price) * 100_000_000f64).ceil() as u64;
+    Ok(CollateralPreview { price, sats, ratio_bps, usd_cents })
 }
 
 #[derive(Clone, CandidType, Deserialize, Serialize)]
@@ -143,8 +302,11 @@ struct BackendAddressBinding {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BackendAmountOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
     ordinals_sats: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     fee_recipient_sats: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     vault_sats: Option<u64>,
 }
 
@@ -210,8 +372,9 @@ impl From<BackendMintResponse> for MintResponse {
 }
 
 #[update]
-async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
-  let config = SETTINGS.with(|settings| settings.borrow().clone());
+async fn build_psbt(mut request: BuildPsbtRequest) -> Result<MintResponse, String> {
+  let settings = SETTINGS.with(|s| s.borrow().clone());
+  let config = settings.backend.clone();
   if config.base_url.is_empty() {
     return Err("backend_not_configured".into());
   }
@@ -223,7 +386,39 @@ async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
     request.fee_rate
   );
 
-  let backend_request: BackendBuildPsbtRequest = request.into();
+  // Compute dynamic collateral from XRC
+  let dynamic_vault_sats = match xrc_btc_usd_price().await {
+      Ok(price) => {
+          let usd = (settings.collateral.usd_cents as f64) / 100.0;
+          let ratio = (settings.collateral.ratio_bps as f64) / 10_000.0;
+          let sats = ((usd * ratio / price) * 100_000_000f64).ceil() as u64;
+          Some(sats)
+      },
+      Err(e) => {
+          ic_cdk::println!("[build_psbt] price unavailable: {}", e);
+          None
+      }
+  };
+
+  // Merge amounts override (prefer XRC vault_sats when available)
+  let mut backend_amounts: Option<BackendAmountOverrides> = request
+      .amounts
+      .clone()
+      .map(|a| BackendAmountOverrides { ordinals_sats: a.ordinals_sats, fee_recipient_sats: a.fee_recipient_sats, vault_sats: a.vault_sats });
+  if let Some(vs) = dynamic_vault_sats {
+      backend_amounts.get_or_insert(BackendAmountOverrides { ordinals_sats: None, fee_recipient_sats: None, vault_sats: None }).vault_sats = Some(vs);
+  } else {
+      return Err("price_unavailable".into());
+  }
+
+  let backend_request = BackendBuildPsbtRequest {
+      rune: request.rune,
+      fee_rate: request.fee_rate,
+      fee_recipient: request.fee_recipient,
+      ordinals: request.ordinals.into(),
+      payment: request.payment.into(),
+      amounts: backend_amounts,
+  };
   let body = serde_json::to_vec(&backend_request).map_err(|err| err.to_string())?;
   let mut headers = vec![HttpHeader {
     name: "Content-Type".into(),
