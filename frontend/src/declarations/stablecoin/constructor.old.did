@@ -1,0 +1,61 @@
+type AddressBinding = record {
+  address : text;
+  address_type : text;
+  public_key : text;
+};
+
+type AmountOverrides = record {
+  ordinals_sats : opt nat64;
+  fee_recipient_sats : opt nat64;
+  vault_sats : opt nat64;
+};
+
+type BackendConfig = record {
+  base_url : text;
+  api_key : opt text;
+};
+
+type InputRef = record {
+  txid : text;
+  vout : nat32;
+};
+
+type ChangeOutput = record {
+  address : text;
+  amount_btc : text;
+};
+
+type MintResult = record {
+  wallet : text;
+  vault_address : text;
+  descriptor : text;
+  original_psbt : text;
+  patched_psbt : text;
+  raw_transaction_hex : text;
+  inputs : vec InputRef;
+  change_output : opt ChangeOutput;
+};
+
+type MintResponse = record {
+  rune : text;
+  fee_rate : float64;
+  result : MintResult;
+};
+
+type BuildPsbtRequest = record {
+  rune : text;
+  fee_rate : float64;
+  fee_recipient : text;
+  ordinals : AddressBinding;
+  payment : AddressBinding;
+  amounts : opt AmountOverrides;
+};
+
+service : {
+  health: () -> (text) query;
+  version: () -> (text) query;
+  ping: () -> (text);
+  get_backend_config: () -> (BackendConfig) query;
+  set_backend_config: (text, opt text) -> ();
+  build_psbt: (BuildPsbtRequest) -> (variant { Ok : MintResponse; Err : text });
+}
