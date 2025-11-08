@@ -1,6 +1,7 @@
 import { config, satsToBtcString } from '../config.js';
 import { MintOutputAmounts, MintPsbtResult, MintRequestBody } from '../types.js';
 import { runCliJson, runCliRaw } from '../utils/bitcoinCli.js';
+import { vaultStore } from './vaultStore.js';
 
 interface DescriptorInfo {
   descriptor: string;
@@ -33,8 +34,27 @@ interface DecodedPsbt {
   };
 }
 
-function buildDescriptor(userPublicKey: string): string {
-  return `wsh(or_i(multi(2,${config.guardianPublicKey},${userPublicKey}),multi(2,${config.vaultKeys[0]},${config.vaultKeys[1]})))`;
+function xOnly(hex: string): string {
+  const h = hex.toLowerCase();
+  if (h.length === 66 && (h.startsWith('02') || h.startsWith('03'))) {
+    return h.slice(2);
+  }
+  if (h.length === 64) return h;
+  throw new Error(`invalid pubkey length for x-only conversion: len=${hex.length}`);
+}
+
+function buildDescriptor(protocolXOnly: string, userCompressed33: string): string {
+  const internal = xOnly(config.guardianPublicKey);
+  const userX = xOnly(userCompressed33);
+  // Redemption leaf: protocol key (x-only) + user
+  const leafAX = `multi_a(2,${protocolXOnly.toLowerCase()},${userX})`;
+
+  const vkA = xOnly(config.vaultKeys[0]);
+  const vkB = xOnly(config.vaultKeys[1]);
+  const leafBX = `multi_a(2,${vkA},${vkB})`;
+
+  // TapTree with guardian internal key and two script leaves
+  return `tr(${internal},{${leafAX},${leafBX}})`;
 }
 
 async function ensureWallet(wallet: string): Promise<void> {
@@ -175,22 +195,41 @@ async function waitForWalletRescan(wallet: string): Promise<void> {
 
 export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResult> {
   const wallet = body.payment.address;
+  const vaultId = body.vaultId;
+  const protocolPublicKey = body.protocolPublicKey.toLowerCase();
+  const protocolChainCode = body.protocolChainCode.toLowerCase();
   console.info('[mintService] start', {
     wallet,
     rune: body.rune,
     feeRate: body.feeRate,
     ordinals: body.ordinals.address,
-    payment: body.payment.address
+    payment: body.payment.address,
+    vaultId,
+    protocolPublicKey
   });
   await ensureWallet(wallet);
 
-  const descriptor = buildDescriptor(body.payment.publicKey);
+  const descriptor = buildDescriptor(protocolPublicKey, body.payment.publicKey);
   const descriptorInfo = await getDescriptorInfo(descriptor);
   const descriptorWithChecksum = descriptorInfo.descriptor; // already contains #checksum
 
   await importDescriptor(wallet, descriptorWithChecksum);
   const vaultAddress = await deriveVaultAddress(descriptorWithChecksum);
-  console.info('[mintService] descriptor ready', { wallet, vaultAddress });
+  console.info('[mintService] descriptor ready', { wallet, vaultAddress, vaultId });
+
+  await vaultStore.recordVault({
+    vaultId,
+    protocolPublicKey,
+    protocolChainCode,
+    vaultAddress,
+    descriptor: descriptorWithChecksum,
+    metadata: {
+      rune: body.rune,
+      feeRate: body.feeRate,
+      ordinalsAddress: body.ordinals.address,
+      paymentAddress: body.payment.address
+    }
+  });
 
   const resolvedAmounts = resolveAmounts(body.amounts);
   const feeRecipientAddr = config.feeRecipientAddress;
@@ -286,6 +325,9 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
   return {
     wallet,
     vaultAddress,
+    vaultId,
+    protocolPublicKey,
+    protocolChainCode,
     descriptor: descriptorWithChecksum,
     originalPsbt: psbtResult.psbt,
     patchedPsbt: updatedPsbt,

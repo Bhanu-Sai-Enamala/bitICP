@@ -23,14 +23,17 @@ export const idlFactory = ({ IDL }) => {
   });
   const InputRef = IDL.Record({ 'txid' : IDL.Text, 'vout' : IDL.Nat32 });
   const MintResult = IDL.Record({
-    'change_output' : IDL.Opt(ChangeOutput),
-    'raw_transaction_hex' : IDL.Text,
-    'descriptor' : IDL.Text,
-    'vault_address' : IDL.Text,
-    'inputs' : IDL.Vec(InputRef),
     'wallet' : IDL.Text,
+    'vault_address' : IDL.Text,
+    'vault_id' : IDL.Text,
+    'protocol_public_key' : IDL.Text,
+    'protocol_chain_code' : IDL.Text,
+    'descriptor' : IDL.Text,
     'original_psbt' : IDL.Text,
     'patched_psbt' : IDL.Text,
+    'raw_transaction_hex' : IDL.Text,
+    'inputs' : IDL.Vec(InputRef),
+    'change_output' : IDL.Opt(ChangeOutput),
   });
   const MintResponse = IDL.Record({
     'result' : MintResult,

@@ -10,6 +10,9 @@ export interface MintRequestBody {
   feeRecipient: string;
   ordinals: AddressBinding;
   payment: AddressBinding;
+  vaultId: string;
+  protocolPublicKey: string;
+  protocolChainCode: string;
   amounts?: Partial<MintOutputAmounts>;
 }
 
@@ -22,6 +25,9 @@ export interface MintOutputAmounts {
 export interface MintPsbtResult {
   wallet: string;
   vaultAddress: string;
+  vaultId: string;
+  protocolPublicKey: string;
+  protocolChainCode: string;
   descriptor: string;
   originalPsbt: string;
   patchedPsbt: string;
@@ -29,4 +35,3 @@ export interface MintPsbtResult {
   inputs: Array<{ txid: string; vout: number }>;
   changeOutput?: { address: string; amountBtc: string };
 }
-

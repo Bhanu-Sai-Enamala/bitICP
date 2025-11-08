@@ -110,6 +110,12 @@ npm run dev --prefix backend            # or npm run build && npm start --prefix
 
 The service listens on `http://localhost:3001` by default (`PORT` in `.env`).
 
+### Vault key records (Taproot)
+
+- Each mint call now includes `vaultId`, `protocolPublicKey`, and `protocolChainCode` supplied by the stablecoin canister’s threshold Schnorr API.
+- The backend persists these entries to `backend/data/vaults.json` (override with `VAULT_DB_PATH` in `.env`) so you can audit which Taproot key/address backs every vault.
+- Console logs echo the derived Taproot address and vault ID to simplify debugging while we stand up the withdraw flow.
+
 ### Endpoint: `POST /mint/build-psbt`
 
 Request body (same shape used in the non-ICP flow):
@@ -119,6 +125,9 @@ Request body (same shape used in the non-ICP flow):
   "rune": "FOOLBYTHEDAY",
   "feeRate": 12.0,
   "feeRecipient": "tb1pkde3l5fzut4n5h9m2jqfzwtn7q3j0eywl98h0rvg5swlvpra5wnqul27y2",
+  "vaultId": "12345",
+  "protocolPublicKey": "c97a2f0d8f56f9596fcd2c802b93db27f0c844700c5dfa4d499e2f6f92daad07",
+  "protocolChainCode": "be6cdd9b5d42fcbc84751c9627c6908b9557b84dff65ff94da6f54b2f1eaa040",
   "ordinals": {
     "address": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
     "addressType": "p2tr",
@@ -131,6 +140,9 @@ Request body (same shape used in the non-ICP flow):
   }
 }
 ```
+
+"vaultId", "protocolPublicKey", and "protocolChainCode" come from the stablecoin canister’s threshold-signature flow; when calling the backend manually you must supply realistic values from a recent canister response.
+
 "`feeRecipient`" in the payload is ignored; the backend always uses the configured `FEE_RECIPIENT_ADDRESS` (defaults to `tb1pkde3l5fzut4n5h9m2jqfzwtn7q3j0eywl98h0rvg5swlvpra5wnqul27y2`).
 
 Optional `amounts` override:

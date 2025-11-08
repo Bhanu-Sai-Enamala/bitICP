@@ -32,14 +32,17 @@ export interface MintResponse {
   'fee_rate' : number,
 }
 export interface MintResult {
-  'change_output' : [] | [ChangeOutput],
-  'raw_transaction_hex' : string,
-  'descriptor' : string,
-  'vault_address' : string,
-  'inputs' : Array<InputRef>,
   'wallet' : string,
+  'vault_address' : string,
+  'vault_id' : string,
+  'protocol_public_key' : string,
+  'protocol_chain_code' : string,
+  'descriptor' : string,
   'original_psbt' : string,
   'patched_psbt' : string,
+  'raw_transaction_hex' : string,
+  'inputs' : Array<InputRef>,
+  'change_output' : [] | [ChangeOutput],
 }
 export interface _SERVICE {
   'build_psbt' : ActorMethod<

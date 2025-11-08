@@ -12,15 +12,28 @@ type StablecoinActor = Awaited<ReturnType<typeof stablecoinActor>>;
 interface BuildPsbtOk {
   Ok: {
     result: {
+      vault_address: string;
+      vault_id: string;
+      protocol_public_key: string;
+      protocol_chain_code: string;
+      descriptor: string;
+      original_psbt: string;
       patched_psbt: string;
       raw_transaction_hex: string;
+      inputs: Array<{ txid: string; vout: number }>;
       change_output: [{ address: string; amount_btc: string }] | [];
-      vault_address: string;
       wallet: string;
     };
   };
 }
 type BuildPsbtResult = BuildPsbtOk | { Err: string };
+
+interface VaultMeta {
+  vaultId: string;
+  protocolPublicKey: string;
+  protocolChainCode: string;
+  vaultAddress: string;
+}
 
 const DEFAULT_ORDINALS_ADDRESS =
   'tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6';
@@ -46,6 +59,7 @@ export default function App() {
   const [mintInputCount, setMintInputCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string>();
+  const [vaultMeta, setVaultMeta] = useState<VaultMeta | null>(null);
 
   const [ordinalsAddress, setOrdinalsAddress] = useState(DEFAULT_ORDINALS_ADDRESS);
   const [ordinalsPubKey, setOrdinalsPubKey] = useState(DEFAULT_ORDINALS_PUBKEY);
@@ -95,15 +109,23 @@ export default function App() {
       throw new Error(response.Err);
     }
 
-      console.debug('[frontend] build_psbt success', {
-        vault: response.Ok.result.vault_address,
-        inputs: response.Ok.result.inputs.length,
-        wallet: response.Ok.result.wallet
-      });
-    const psbt = response.Ok.result.patched_psbt;
+    const result = response.Ok.result;
+    console.debug('[frontend] build_psbt success', {
+      vault: result.vault_address,
+      vaultId: result.vault_id,
+      inputs: result.inputs.length,
+      wallet: result.wallet
+    });
+    setVaultMeta({
+      vaultId: result.vault_id,
+      protocolPublicKey: result.protocol_public_key,
+      protocolChainCode: result.protocol_chain_code,
+      vaultAddress: result.vault_address
+    });
+    const psbt = result.patched_psbt;
     setPsbtBase64(psbt);
-    setMintInputCount(response.Ok.result.inputs.length);
-    console.info('[frontend] received psbt', response.Ok.result);
+    setMintInputCount(result.inputs.length);
+    console.info('[frontend] received psbt', result);
     return psbt;
   }, [actor, ordinalsAddress, ordinalsPubKey, paymentAddress, paymentPubKey]);
 
@@ -111,6 +133,8 @@ export default function App() {
     setIsLoading(true);
     setError(undefined);
     setMintInputCount(0);
+    setVaultMeta(null);
+    setPsbtBase64(undefined);
     try {
       await buildPsbt();
     } catch (e) {
@@ -263,6 +287,16 @@ export default function App() {
               <div style={{ marginTop: 14 }}>
                 <div className="label" style={{ marginBottom: 6 }}>Latest PSBT (base64)</div>
                 <pre className="codebox mono">{psbtBase64}</pre>
+              </div>
+            )}
+
+            {vaultMeta && (
+              <div style={{ marginTop: 14 }}>
+                <div className="label" style={{ marginBottom: 6 }}>Vault allocation (taproot)</div>
+                <div className="mono muted" style={{ wordBreak: 'break-all' }}>Vault ID: {vaultMeta.vaultId}</div>
+                <div className="mono muted" style={{ wordBreak: 'break-all' }}>Vault address: {vaultMeta.vaultAddress}</div>
+                <div className="mono muted" style={{ wordBreak: 'break-all' }}>Protocol key: {vaultMeta.protocolPublicKey}</div>
+                <div className="mono muted" style={{ wordBreak: 'break-all' }}>Chain code: {vaultMeta.protocolChainCode}</div>
               </div>
             )}
 
