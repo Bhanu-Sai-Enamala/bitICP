@@ -9,9 +9,19 @@ use ic_cdk::storage::{stable_restore, stable_save};
 use ic_cdk_macros::{init, post_upgrade, pre_upgrade, query, update};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::fmt::Write as FmtWrite;
+// Using explicit Candid-compatible types (avoid depending on ic-cdk internal aliases)
 
 const HTTP_CYCLES_COST: u128 = 2_000_000_000_000; // 2T cycles (~0.2T min) per request baseline
 const XRC_DEFAULT_CYCLES_BUDGET: u128 = 1_000_000_000_000; // start generous; trim after measuring
+const COLLATERAL_FALLBACK_PRICE_USD: f64 = 100_734.10; // Local dev fallback BTC/USD price
+const SCHNORR_PUBLIC_KEY_CYCLES: u128 = 5_000_000_000; // empirical local budget; adjust after benchmarking
+const SCHNORR_KEY_ALGORITHM: &str = "bip340secp256k1";
+// Local replica exposes keys named `dfx_test_key` for ECDSA/Schnorr.
+// Use this for local dev; swap to `key_1` (or production name) when moving to mainnet.
+const SCHNORR_KEY_NAME: &str = "dfx_test_key";
+const PROTOCOL_DOMAIN_LABEL: &[u8] = b"usdb";
+const PROTOCOL_ROLE_LABEL: &[u8] = b"proto";
 
 #[derive(Clone, Default, CandidType, Deserialize, Serialize)]
 struct BackendConfig {
@@ -33,7 +43,7 @@ impl Default for CollateralParams {
     }
 }
 
-#[derive(Clone, Default, CandidType, Deserialize, Serialize)]
+#[derive(Clone, CandidType, Deserialize, Serialize)]
 struct Settings {
     backend: BackendConfig,
     /// Optional XRC canister id. When None, price querying is disabled.
@@ -41,10 +51,23 @@ struct Settings {
     /// Cycles budget to attach to each XRC call
     xrc_cycles_budget: u128,
     collateral: CollateralParams,
+    next_vault_id: u64,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            backend: BackendConfig::default(),
+            xrc_canister_id: None,
+            xrc_cycles_budget: XRC_DEFAULT_CYCLES_BUDGET,
+            collateral: CollateralParams::default(),
+            next_vault_id: 1,
+        }
+    }
 }
 
 thread_local! {
-    static SETTINGS: RefCell<Settings> = RefCell::new(Settings { backend: BackendConfig::default(), xrc_canister_id: None, xrc_cycles_budget: XRC_DEFAULT_CYCLES_BUDGET, collateral: CollateralParams::default() });
+    static SETTINGS: RefCell<Settings> = RefCell::new(Settings::default());
 }
 
 #[init]
@@ -226,9 +249,7 @@ async fn get_collateral_preview() -> Result<CollateralPreview, String> {
         let st = s.borrow();
         (st.collateral.ratio_bps, st.collateral.usd_cents)
     });
-    let usd = (usd_cents as f64) / 100.0;
-    let ratio = (ratio_bps as f64) / 10_000.0;
-    let sats = ((usd * ratio / price) * 100_000_000f64).ceil() as u64;
+    let sats = compute_target_collateral_sats(price, ratio_bps, usd_cents);
     Ok(CollateralPreview { price, sats, ratio_bps, usd_cents })
 }
 
@@ -244,6 +265,122 @@ struct AmountOverrides {
     ordinals_sats: Option<u64>,
     fee_recipient_sats: Option<u64>,
     vault_sats: Option<u64>,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+enum SignatureAlgorithm {
+    #[serde(rename = "ed25519")] Ed25519,
+    #[serde(rename = "bip340secp256k1")] Bip340Secp256k1,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+struct SchnorrKeyId {
+    name: String,
+    algorithm: SignatureAlgorithm,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+struct SchnorrPublicKeyRequest {
+    key_id: SchnorrKeyId,
+    derivation_path: Vec<Vec<u8>>,
+    canister_id: Option<Principal>,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+struct SchnorrPublicKeyResponse {
+    public_key: Vec<u8>,
+    chain_code: Vec<u8>,
+}
+
+#[derive(Clone)]
+struct DerivedProtocolKey {
+    vault_id: u64,
+    public_key_hex: String,
+    chain_code_hex: String,
+}
+
+fn next_vault_id() -> u64 {
+    SETTINGS.with(|s| {
+        let mut st = s.borrow_mut();
+        let id = st.next_vault_id;
+        st.next_vault_id = st.next_vault_id.wrapping_add(1).max(1);
+        id
+    })
+}
+
+fn protocol_derivation_path(vault_id: u64) -> Vec<Vec<u8>> {
+    vec![
+        PROTOCOL_DOMAIN_LABEL.to_vec(),
+        PROTOCOL_ROLE_LABEL.to_vec(),
+        vault_id.to_be_bytes().to_vec(),
+    ]
+}
+
+fn schnorr_key_id() -> SchnorrKeyId {
+    SchnorrKeyId {
+        name: SCHNORR_KEY_NAME.to_string(),
+        algorithm: SignatureAlgorithm::Bip340Secp256k1,
+    }
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = FmtWrite::write_fmt(&mut out, format_args!("{:02x}", byte));
+    }
+    out
+}
+
+async fn derive_protocol_key(vault_id: u64) -> Result<DerivedProtocolKey, String> {
+    let derivation_path = protocol_derivation_path(vault_id);
+    ic_cdk::println!(
+        "[tsig] deriving protocol key -> vault_id={}, path_len={}",
+        vault_id,
+        derivation_path.len()
+    );
+    let arg = SchnorrPublicKeyRequest {
+        derivation_path,
+        key_id: schnorr_key_id(),
+        canister_id: None,
+    };
+    let (response,): (SchnorrPublicKeyResponse,) = ic_cdk::api::call::call_with_payment128(
+        Principal::management_canister(),
+        "schnorr_public_key",
+        (arg,),
+        SCHNORR_PUBLIC_KEY_CYCLES,
+    )
+    .await
+    .map_err(|(code, msg)| format!("schnorr_public_key error {:?}: {}", code, msg))?;
+    let mut pubkey = response.public_key.clone();
+    // Accept either x-only 32B (expected) or compressed 33B and convert to x-only.
+    if pubkey.len() == 33 && (pubkey[0] == 0x02 || pubkey[0] == 0x03) {
+        ic_cdk::println!(
+            "[tsig] schnorr_public_key returned 33B compressed; converting to x-only"
+        );
+        pubkey = pubkey[1..].to_vec();
+    }
+    if pubkey.len() != 32 {
+        ic_cdk::println!(
+            "[tsig] invalid pubkey length: {} (hex={})",
+            pubkey.len(),
+            to_hex(&pubkey)
+        );
+        return Err("invalid_protocol_pubkey_length".into());
+    }
+    let public_key_hex = to_hex(&pubkey);
+    let chain_code_hex = to_hex(&response.chain_code);
+    ic_cdk::println!(
+        "[tsig] derived protocol key ok -> vault_id={}, pub={}",
+        vault_id,
+        public_key_hex
+    );
+    Ok(DerivedProtocolKey { vault_id, public_key_hex, chain_code_hex })
+}
+
+fn compute_target_collateral_sats(price: f64, ratio_bps: u16, usd_cents: u32) -> u64 {
+    let usd = (usd_cents as f64) / 100.0;
+    let ratio = (ratio_bps as f64) / 10_000.0;
+    ((usd * ratio / price) * 100_000_000f64).ceil() as u64
 }
 
 #[derive(Clone, CandidType, Deserialize, Serialize)]
@@ -275,6 +412,9 @@ struct BackendChangeOutput {
 struct BackendMintResult {
     wallet: String,
     vault_address: String,
+    vault_id: String,
+    protocol_public_key: String,
+    protocol_chain_code: String,
     descriptor: String,
     original_psbt: String,
     patched_psbt: String,
@@ -319,6 +459,9 @@ struct BackendBuildPsbtRequest {
     ordinals: BackendAddressBinding,
     payment: BackendAddressBinding,
     amounts: Option<BackendAmountOverrides>,
+    vault_id: String,
+    protocol_public_key: String,
+    protocol_chain_code: String,
 }
 
 impl From<AddressBinding> for BackendAddressBinding {
@@ -337,19 +480,6 @@ impl From<AmountOverrides> for BackendAmountOverrides {
             ordinals_sats: value.ordinals_sats,
             fee_recipient_sats: value.fee_recipient_sats,
             vault_sats: value.vault_sats,
-        }
-    }
-}
-
-impl From<BuildPsbtRequest> for BackendBuildPsbtRequest {
-    fn from(value: BuildPsbtRequest) -> Self {
-        Self {
-            rune: value.rune,
-            fee_rate: value.fee_rate,
-            fee_recipient: value.fee_recipient,
-            ordinals: value.ordinals.into(),
-            payment: value.payment.into(),
-            amounts: value.amounts.map(Into::into),
         }
     }
 }
@@ -389,27 +519,68 @@ async fn build_psbt(mut request: BuildPsbtRequest) -> Result<MintResponse, Strin
   // Compute dynamic collateral from XRC
   let dynamic_vault_sats = match xrc_btc_usd_price().await {
       Ok(price) => {
-          let usd = (settings.collateral.usd_cents as f64) / 100.0;
-          let ratio = (settings.collateral.ratio_bps as f64) / 10_000.0;
-          let sats = ((usd * ratio / price) * 100_000_000f64).ceil() as u64;
+          let sats = compute_target_collateral_sats(
+              price,
+              settings.collateral.ratio_bps,
+              settings.collateral.usd_cents,
+          );
+          ic_cdk::println!(
+              "[build_psbt] xrc collateral -> price={}, sats={}",
+              price,
+              sats
+          );
           Some(sats)
       },
       Err(e) => {
-          ic_cdk::println!("[build_psbt] price unavailable: {}", e);
+          ic_cdk::println!("[build_psbt] xrc price unavailable, trying fallbacks: {}", e);
           None
       }
   };
 
-  // Merge amounts override (prefer XRC vault_sats when available)
+  // Merge amounts override
   let mut backend_amounts: Option<BackendAmountOverrides> = request
       .amounts
       .clone()
       .map(|a| BackendAmountOverrides { ordinals_sats: a.ordinals_sats, fee_recipient_sats: a.fee_recipient_sats, vault_sats: a.vault_sats });
-  if let Some(vs) = dynamic_vault_sats {
-      backend_amounts.get_or_insert(BackendAmountOverrides { ordinals_sats: None, fee_recipient_sats: None, vault_sats: None }).vault_sats = Some(vs);
+
+  let user_override_vault = backend_amounts.as_ref().and_then(|a| a.vault_sats);
+  let selected_vault_sats = if let Some(vs) = dynamic_vault_sats {
+      Some(vs)
+  } else if let Some(vs) = user_override_vault {
+      ic_cdk::println!(
+          "[build_psbt] using user-provided vault_sats override: {}",
+          vs
+      );
+      Some(vs)
   } else {
-      return Err("price_unavailable".into());
+      let fallback_sats = compute_target_collateral_sats(
+          COLLATERAL_FALLBACK_PRICE_USD,
+          settings.collateral.ratio_bps,
+          settings.collateral.usd_cents,
+      );
+      ic_cdk::println!(
+          "[build_psbt] no XRC price or override; fallback price {} -> vault_sats={}",
+          COLLATERAL_FALLBACK_PRICE_USD,
+          fallback_sats
+      );
+      Some(fallback_sats)
+  };
+
+  if let Some(vs) = selected_vault_sats {
+      backend_amounts
+          .get_or_insert(BackendAmountOverrides { ordinals_sats: None, fee_recipient_sats: None, vault_sats: None })
+          .vault_sats = Some(vs);
+  } else {
+      return Err("vault_sats_unavailable".into());
   }
+
+  let vault_id = next_vault_id();
+  let protocol_key = derive_protocol_key(vault_id).await?;
+  ic_cdk::println!(
+      "[build_psbt] new vault assignment -> vault_id={}, protocol_pub={}",
+      vault_id,
+      protocol_key.public_key_hex
+  );
 
   let backend_request = BackendBuildPsbtRequest {
       rune: request.rune,
@@ -418,6 +589,9 @@ async fn build_psbt(mut request: BuildPsbtRequest) -> Result<MintResponse, Strin
       ordinals: request.ordinals.into(),
       payment: request.payment.into(),
       amounts: backend_amounts,
+      vault_id: vault_id.to_string(),
+      protocol_public_key: protocol_key.public_key_hex.clone(),
+      protocol_chain_code: protocol_key.chain_code_hex.clone(),
   };
   let body = serde_json::to_vec(&backend_request).map_err(|err| err.to_string())?;
   let mut headers = vec![HttpHeader {

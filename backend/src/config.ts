@@ -26,6 +26,7 @@ export const config = {
   guardianPublicKey:
     env.SERVER_GUARDIAN_KEY ??
     '03b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1',
+  // Optional legacy vault keys used for a tapscript leaf until we move them to t‑Sigs
   vaultKeys: [
     env.SERVER_VAULT_KEY_A ??
       '0265f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363',
@@ -33,6 +34,7 @@ export const config = {
       '03cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663'
   ],
   apiKey: env.API_KEY,
+  vaultDbPath: env.VAULT_DB_PATH ?? path.resolve(__dirname, '../data/vaults.json'),
   feeRecipientAddress:
     env.FEE_RECIPIENT_ADDRESS ??
     'tb1pkde3l5fzut4n5h9m2jqfzwtn7q3j0eywl98h0rvg5swlvpra5wnqul27y2',

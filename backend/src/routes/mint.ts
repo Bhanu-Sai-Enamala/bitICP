@@ -8,6 +8,7 @@ const router = Router();
 
 const hexCompressed33 = /^[0-9a-fA-F]{66}$/; // 33-byte compressed (02/03 + 32 bytes)
 const hexXOnly32 = /^[0-9a-fA-F]{64}$/;      // 32-byte x-only (taproot internal key)
+const hexChainCode32 = /^[0-9a-fA-F]{64}$/;  // 32-byte chain code
 
 const addressBindingSchema = z
   .object({
@@ -40,6 +41,15 @@ const mintRequestSchema = z.object({
   feeRecipient: z.string().min(1),
   ordinals: addressBindingSchema,
   payment: addressBindingSchema,
+  vaultId: z.string().regex(/^[0-9]+$/, 'vaultId must be a decimal string'),
+  protocolPublicKey: z
+    .string()
+    .regex(hexXOnly32, 'protocolPublicKey must be 32-byte x-only hex')
+    .transform((v) => v.toLowerCase()),
+  protocolChainCode: z
+    .string()
+    .regex(hexChainCode32, 'protocolChainCode must be 32-byte hex')
+    .transform((v) => v.toLowerCase()),
   amounts: z
     .object({
       ordinalsSats: z.number().int().positive(),
@@ -81,7 +91,8 @@ router.post('/build-psbt', async (req, res) => {
       feeRate: payload.feeRate,
       ordinalsAddress: payload.ordinals.address,
       paymentAddress: payload.payment.address,
-      amountsProvided: Boolean(payload.amounts)
+      amountsProvided: Boolean(payload.amounts),
+      vaultId: payload.vaultId
     });
     const result = await buildMintPsbt(payload);
     console.info('[mint:build-psbt] psbt built', {

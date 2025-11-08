@@ -28,6 +28,9 @@ type ChangeOutput = record {
 type MintResult = record {
   wallet : text;
   vault_address : text;
+  vault_id : text;
+  protocol_public_key : text;
+  protocol_chain_code : text;
   descriptor : text;
   original_psbt : text;
   patched_psbt : text;
