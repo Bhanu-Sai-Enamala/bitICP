@@ -18,6 +18,8 @@ export interface VaultRecord {
   descriptor: string;
   metadata: VaultRecordMetadata;
   createdAt: number;
+  collateralSats: number;
+  txid?: string;
 }
 
 class VaultStore {
@@ -38,7 +40,9 @@ class VaultStore {
     try {
       const blob = await fsp.readFile(this.filePath, 'utf8');
       const parsed = JSON.parse(blob) as VaultRecord[];
-      parsed.forEach((record) => this.records.set(record.vaultId, record));
+      parsed
+        .map((record) => ({ ...record, collateralSats: record.collateralSats ?? 0 }))
+        .forEach((record) => this.records.set(record.vaultId, record));
       console.info('[vaultStore] bootstrap complete', { file: this.filePath, count: parsed.length });
     } catch (error: any) {
       if (error?.code === 'ENOENT') {
@@ -79,6 +83,24 @@ class VaultStore {
   async listVaults(): Promise<VaultRecord[]> {
     await this.ready;
     return Array.from(this.records.values());
+  }
+
+  async listVaultsByPayment(paymentAddress: string): Promise<VaultRecord[]> {
+    await this.ready;
+    const needle = paymentAddress.toLowerCase();
+    return Array.from(this.records.values())
+      .filter((record) => record.metadata.paymentAddress.toLowerCase() === needle)
+      .filter((record) => Boolean(record.txid))
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  async setTxId(vaultId: string, txid: string): Promise<void> {
+    await this.ready;
+    const found = this.records.get(vaultId);
+    if (!found) return;
+    this.records.set(vaultId, { ...found, txid });
+    await this.persist();
+    console.info('[vaultStore] txid recorded', { vaultId, txid });
   }
 }
 

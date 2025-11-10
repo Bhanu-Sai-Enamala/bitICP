@@ -34,11 +34,28 @@ export const idlFactory = ({ IDL }) => {
     'raw_transaction_hex' : IDL.Text,
     'inputs' : IDL.Vec(InputRef),
     'change_output' : IDL.Opt(ChangeOutput),
+    'collateral_sats' : IDL.Nat64,
+    'rune' : IDL.Text,
+    'fee_rate' : IDL.Float64,
+    'ordinals_address' : IDL.Text,
+    'payment_address' : IDL.Text,
   });
   const MintResponse = IDL.Record({
     'result' : MintResult,
     'rune' : IDL.Text,
     'fee_rate' : IDL.Float64,
+  });
+  const VaultSummary = IDL.Record({
+    'vault_id' : IDL.Text,
+    'vault_address' : IDL.Text,
+    'collateral_sats' : IDL.Nat64,
+    'protocol_public_key' : IDL.Text,
+    'created_at' : IDL.Nat64,
+    'rune' : IDL.Text,
+    'fee_rate' : IDL.Float64,
+    'ordinals_address' : IDL.Text,
+    'payment_address' : IDL.Text,
+    'txid' : IDL.Opt(IDL.Text),
   });
   const BackendConfig = IDL.Record({
     'base_url' : IDL.Text,
@@ -48,6 +65,11 @@ export const idlFactory = ({ IDL }) => {
     'build_psbt' : IDL.Func(
         [BuildPsbtRequest],
         [IDL.Variant({ 'Ok' : MintResponse, 'Err' : IDL.Text })],
+        [],
+      ),
+    'list_user_vaults' : IDL.Func(
+        [IDL.Text],
+        [IDL.Variant({ 'Ok' : IDL.Vec(VaultSummary), 'Err' : IDL.Text })],
         [],
       ),
     'get_backend_config' : IDL.Func([], [BackendConfig], ['query']),

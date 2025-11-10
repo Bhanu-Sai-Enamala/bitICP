@@ -1,4 +1,5 @@
 use candid::{CandidType, Func, Nat, Principal};
+use ic_cdk::api::call::RejectionCode;
 use ic_cdk::api::management_canister::http_request::{
     http_request, CanisterHttpRequestArgument, HttpHeader, HttpMethod, HttpResponse,
     TransformArgs, TransformContext, TransformFunc,
@@ -13,6 +14,7 @@ use std::fmt::Write as FmtWrite;
 // Using explicit Candid-compatible types (avoid depending on ic-cdk internal aliases)
 
 const HTTP_CYCLES_COST: u128 = 2_000_000_000_000; // 2T cycles (~0.2T min) per request baseline
+const BACKEND_HTTP_MAX_RETRIES: u8 = 2;
 const XRC_DEFAULT_CYCLES_BUDGET: u128 = 1_000_000_000_000; // start generous; trim after measuring
 const COLLATERAL_FALLBACK_PRICE_USD: f64 = 100_734.10; // Local dev fallback BTC/USD price
 const SCHNORR_PUBLIC_KEY_CYCLES: u128 = 5_000_000_000; // empirical local budget; adjust after benchmarking
@@ -383,6 +385,55 @@ fn compute_target_collateral_sats(price: f64, ratio_bps: u16, usd_cents: u32) ->
     ((usd * ratio / price) * 100_000_000f64).ceil() as u64
 }
 
+fn should_retry_backend(code: &RejectionCode, msg: &str) -> bool {
+    matches!(code, RejectionCode::SysFatal | RejectionCode::SysTransient)
+        || msg.to_ascii_lowercase().contains("timeout")
+}
+
+async fn backend_http_request(
+    url: String,
+    method: HttpMethod,
+    body: Option<Vec<u8>>,
+    headers: Vec<HttpHeader>,
+) -> Result<HttpResponse, String> {
+    let mut attempt: u8 = 0;
+    loop {
+        let body_clone = body.as_ref().map(|b| b.clone());
+        let args = CanisterHttpRequestArgument {
+            url: url.clone(),
+            method: method.clone(),
+            body: body_clone,
+            max_response_bytes: Some(2_000_000),
+            headers: headers.clone(),
+            transform: Some(TransformContext {
+                function: TransformFunc(Func {
+                    principal: ic_cdk::id(),
+                    method: "transform_http_response".into(),
+                }),
+                context: vec![],
+            }),
+        };
+
+        match http_request(args, HTTP_CYCLES_COST).await {
+            Ok((resp,)) => return Ok(resp),
+            Err((code, msg)) => {
+                if attempt >= BACKEND_HTTP_MAX_RETRIES || !should_retry_backend(&code, &msg) {
+                    return Err(format!("http_request error {:?}: {}", code, msg));
+                }
+                attempt += 1;
+                ic_cdk::println!(
+                    "[backend_http_request] retry {}/{} after error {:?}: {}",
+                    attempt,
+                    BACKEND_HTTP_MAX_RETRIES,
+                    code,
+                    msg
+                );
+                continue;
+            }
+        }
+    }
+}
+
 #[derive(Clone, CandidType, Deserialize, Serialize)]
 struct BuildPsbtRequest {
     rune: String,
@@ -421,6 +472,56 @@ struct BackendMintResult {
     raw_transaction_hex: String,
     inputs: Vec<BackendInputRef>,
     change_output: Option<BackendChangeOutput>,
+    collateral_sats: u64,
+    rune: String,
+    fee_rate: f64,
+    ordinals_address: String,
+    payment_address: String,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendVaultMetadata {
+    rune: String,
+    fee_rate: f64,
+    ordinals_address: String,
+    payment_address: String,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendVaultRecord {
+    vault_id: String,
+    protocol_public_key: String,
+    protocol_chain_code: String,
+    vault_address: String,
+    descriptor: String,
+    collateral_sats: u64,
+    created_at: u64,
+    metadata: BackendVaultMetadata,
+    txid: Option<String>,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendVaultListResponse {
+    payment_address: String,
+    vaults: Vec<BackendVaultRecord>,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultSummary {
+    vault_id: String,
+    vault_address: String,
+    collateral_sats: u64,
+    protocol_public_key: String,
+    created_at: u64,
+    rune: String,
+    fee_rate: f64,
+    ordinals_address: String,
+    payment_address: String,
+    txid: Option<String>,
 }
 
 #[derive(Clone, CandidType, Deserialize, Serialize)]
@@ -607,24 +708,7 @@ async fn build_psbt(mut request: BuildPsbtRequest) -> Result<MintResponse, Strin
     }
 
   let url = format!("{}/mint/build-psbt", config.base_url.trim_end_matches('/'));
-  let args = CanisterHttpRequestArgument {
-    url,
-    method: HttpMethod::POST,
-    body: Some(body),
-    max_response_bytes: Some(2_000_000),
-        headers,
-        transform: Some(TransformContext {
-            function: TransformFunc(Func {
-                principal: ic_cdk::id(),
-                method: "transform_http_response".into(),
-            }),
-            context: vec![],
-        }),
-    };
-
-  let (response,) = http_request(args, HTTP_CYCLES_COST)
-    .await
-    .map_err(|(code, msg)| format!("http_request error: {:?}: {}", code, msg))?;
+  let response = backend_http_request(url, HttpMethod::POST, Some(body), headers.clone()).await?;
 
   ic_cdk::println!(
     "[build_psbt] received response status {:?}, body_len={}",
@@ -647,6 +731,58 @@ async fn build_psbt(mut request: BuildPsbtRequest) -> Result<MintResponse, Strin
   );
 
   Ok(MintResponse::from(parsed))
+}
+
+#[update]
+async fn list_user_vaults(payment_address: String) -> Result<Vec<VaultSummary>, String> {
+    let settings = SETTINGS.with(|s| s.borrow().clone());
+    let config = settings.backend;
+    if config.base_url.is_empty() {
+        return Err("backend_not_configured".into());
+    }
+
+    if payment_address.trim().is_empty() {
+        return Err("missing_payment_address".into());
+    }
+
+    let mut headers = vec![];
+    if let Some(api_key) = config.api_key.clone() {
+        headers.push(HttpHeader { name: "x-api-key".into(), value: api_key });
+    }
+
+    let url = format!(
+        "{}/vaults?payment={}",
+        config.base_url.trim_end_matches('/'),
+        payment_address
+    );
+
+    let response = backend_http_request(url, HttpMethod::GET, None, headers).await?;
+    if response.status >= Nat::from(400u32) {
+        return Err(format!("backend responded with status {}", response.status));
+    }
+
+    let parsed: BackendVaultListResponse = serde_json::from_slice(&response.body)
+        .map_err(|err| format!("invalid backend json: {}", err))?;
+
+    let mut summaries: Vec<VaultSummary> = parsed
+        .vaults
+        .into_iter()
+        .map(|record| VaultSummary {
+            vault_id: record.vault_id,
+            vault_address: record.vault_address,
+            collateral_sats: record.collateral_sats,
+            protocol_public_key: record.protocol_public_key,
+            created_at: record.created_at,
+            rune: record.metadata.rune,
+            fee_rate: record.metadata.fee_rate,
+            ordinals_address: record.metadata.ordinals_address,
+            payment_address: record.metadata.payment_address,
+            txid: record.txid,
+        })
+        .collect();
+
+    summaries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(summaries)
 }
 
 #[query]

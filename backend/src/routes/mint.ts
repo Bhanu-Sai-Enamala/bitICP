@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { buildMintPsbt } from '../services/mintService.js';
 import { MintRequestBody } from '../types.js';
 import { config } from '../config.js';
+import { vaultStore } from '../services/vaultStore.js';
+import { runCliJson, runCliRaw } from '../utils/bitcoinCli.js';
 
 const router = Router();
 
@@ -121,3 +123,83 @@ router.post('/build-psbt', async (req, res) => {
 });
 
 export default router;
+
+// --- finalize & broadcast ---
+const finalizeVaultSchema = z.object({
+  vaultAddress: z.string().min(1),
+  protocolPublicKey: z.string().min(1),
+  protocolChainCode: z.string().min(1),
+  descriptor: z.string().min(1),
+  collateralSats: z.number().int().nonnegative(),
+  rune: z.string().min(1),
+  feeRate: z.number().positive(),
+  ordinalsAddress: z.string().min(1),
+  paymentAddress: z.string().min(1),
+});
+
+const finalizeSchema = z.object({
+  wallet: z.string().min(1),
+  psbt: z.string().min(1), // base64
+  vaultId: z.string().min(1),
+  broadcast: z.boolean().optional().default(true),
+  vault: finalizeVaultSchema.optional(),
+});
+
+router.post('/finalize', async (req, res) => {
+  const parsed = finalizeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'INVALID_REQUEST', details: parsed.error.flatten() });
+  }
+  const { wallet, psbt, vaultId, broadcast, vault } = parsed.data;
+  try {
+    // Try JSON style first
+    let hex: string | undefined;
+    let complete = false;
+    try {
+      const j = await runCliJson<{ psbt: string; hex: string; complete: boolean }>(
+        ['finalizepsbt', psbt],
+        { wallet }
+      );
+      hex = j.hex;
+      complete = j.complete;
+    } catch (_e) {
+      // Fallback: extract=true returns hex string in some versions
+      const out = await runCliRaw(['finalizepsbt', psbt, 'true'], { wallet });
+      hex = out.trim();
+      complete = true;
+    }
+
+    if (!hex || !complete) {
+      return res.status(400).json({ error: 'FINALIZE_INCOMPLETE', complete, hex });
+    }
+
+    let txid: string | undefined;
+    if (broadcast !== false) {
+      txid = await runCliRaw(['sendrawtransaction', hex]);
+      if (vault && txid) {
+        await vaultStore.recordVault({
+          vaultId,
+          protocolPublicKey: vault.protocolPublicKey,
+          protocolChainCode: vault.protocolChainCode,
+          vaultAddress: vault.vaultAddress,
+          descriptor: vault.descriptor,
+          collateralSats: vault.collateralSats,
+          metadata: {
+            rune: vault.rune,
+            feeRate: vault.feeRate,
+            ordinalsAddress: vault.ordinalsAddress,
+            paymentAddress: vault.paymentAddress,
+          },
+          txid,
+        });
+      } else if (txid) {
+        await vaultStore.setTxId(vaultId, txid);
+      }
+    }
+
+    res.json({ vaultId, hex, complete, txid: txid ?? null });
+  } catch (error: any) {
+    console.error('[mint:finalize] error', { message: error?.message, stdout: error?.stdout, stderr: error?.stderr });
+    res.status(500).json({ error: 'FINALIZE_FAILED', message: error?.message, stdout: error?.stdout, stderr: error?.stderr });
+  }
+});

@@ -57,9 +57,23 @@ function buildDescriptor(protocolXOnly: string, userCompressed33: string): strin
   return `tr(${internal},{${leafAX},${leafBX}})`;
 }
 
-async function ensureWallet(wallet: string): Promise<void> {
+async function ensureWallet(wallet: string): Promise<boolean> {
+  let created = false;
   try {
-    await runCliJson(['createwallet', wallet, 'true', 'true', '', 'false', 'true', 'false']);
+    const result = await runCliJson<{ name: string }>([
+      'createwallet',
+      wallet,
+      'true',
+      'true',
+      '',
+      'false',
+      'true',
+      'false'
+    ]);
+    if (result?.name) {
+      created = true;
+      console.info('[mintService] wallet created', { wallet });
+    }
   } catch (error: any) {
     const message = (error?.message ?? '').toLowerCase();
     if (!message.includes('database already exists')) {
@@ -78,6 +92,7 @@ async function ensureWallet(wallet: string): Promise<void> {
       throw error;
     }
   }
+  return created;
 }
 
 async function getDescriptorInfo(descriptor: string): Promise<DescriptorInfo> {
@@ -98,6 +113,46 @@ async function importDescriptor(
     }
   ];
   await runCliJson(['importdescriptors', JSON.stringify(payload)], { wallet });
+}
+
+interface ImportDescriptorResultItem {
+  success: boolean;
+  warnings?: string[];
+  error?: { code: number; message: string };
+}
+
+type PaymentDescriptorImport = 'imported' | 'duplicate';
+
+async function importPaymentDescriptor(
+  wallet: string,
+  paymentCompressed33: string
+): Promise<PaymentDescriptorImport> {
+  // Watch-only import of user's payment address via wpkh(<33-byte pubkey>)
+  const descriptor = `wpkh(${paymentCompressed33})`;
+  const info = await getDescriptorInfo(descriptor);
+  const payload = [
+    {
+      desc: info.descriptor,
+      timestamp: 0, // rescan entire chain so existing UTXOs become visible
+      active: false,
+      label: 'user-payment'
+    }
+  ];
+  const result = await runCliJson<ImportDescriptorResultItem[]>(
+    ['importdescriptors', JSON.stringify(payload)],
+    { wallet }
+  );
+  const item = result[0];
+  if (item?.success) {
+    return 'imported';
+  }
+  const warningText = (item?.warnings ?? []).join(' ').toLowerCase();
+  const errorText = (item?.error?.message ?? '').toLowerCase();
+  if (warningText.includes('duplicate') || warningText.includes('exists') ||
+      errorText.includes('duplicate') || errorText.includes('exists')) {
+    return 'duplicate';
+  }
+  throw new Error(item?.error?.message || 'failed to import payment descriptor');
 }
 
 async function deriveVaultAddress(descriptorWithChecksum: string): Promise<string> {
@@ -155,18 +210,26 @@ function buildOutputsObject(
 }
 
 function patchRunestoneData(rawHex: string): string {
-  const target = `096a07${config.mintRunestoneData}`;
-  const replacement = `0a6a5d07${config.mintRunestoneData}`;
+  const data = config.mintRunestoneData;
   const lowerHex = rawHex.toLowerCase();
-  const index = lowerHex.indexOf(target);
-  if (index === -1) {
-    throw new Error('Unable to locate rune data payload in raw transaction');
+
+  // New format (you specified): 08 6a 06 <data>  ->  09 6a 5d 06 <data>
+  const targetNew = `086a06${data}`;
+  const replacementNew = `096a5d06${data}`;
+  let idx = lowerHex.indexOf(targetNew);
+  if (idx !== -1) {
+    return lowerHex.slice(0, idx) + replacementNew + lowerHex.slice(idx + targetNew.length);
   }
-  return (
-    lowerHex.slice(0, index) +
-    replacement +
-    lowerHex.slice(index + target.length)
-  );
+
+  // Legacy format (previous): 09 6a 07 <data>  ->  0a 6a 5d 07 <data>
+  const targetOld = `096a07${data}`;
+  const replacementOld = `0a6a5d07${data}`;
+  idx = lowerHex.indexOf(targetOld);
+  if (idx !== -1) {
+    return lowerHex.slice(0, idx) + replacementOld + lowerHex.slice(idx + targetOld.length);
+  }
+
+  throw new Error('Unable to locate rune data payload in raw transaction (no matching pattern)');
 }
 
 function sleep(ms: number): Promise<void> {
@@ -184,7 +247,15 @@ async function waitForWalletRescan(wallet: string): Promise<void> {
     );
     const scanning = info.scanning;
     if (scanning === false || scanning === undefined) {
+      console.info('[mintService] wallet rescan complete', { wallet });
       return;
+    }
+    if (scanning && typeof scanning === 'object') {
+      console.info('[mintService] wallet rescan in progress', {
+        wallet,
+        progress: scanning.progress?.toFixed?.(4) ?? scanning.progress,
+        duration: scanning.duration
+      });
     }
     if (Date.now() - start > timeoutMs) {
       throw new Error('wallet rescan still in progress after waiting 5 minutes');
@@ -194,7 +265,8 @@ async function waitForWalletRescan(wallet: string): Promise<void> {
 }
 
 export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResult> {
-  const wallet = body.payment.address;
+  const wallet = body.payment.address; // funding wallet (watch-only of user's payment key)
+  const vaultWallet = `vault-${body.vaultId}`; // separate watch-only wallet that tracks vault descriptors
   const vaultId = body.vaultId;
   const protocolPublicKey = body.protocolPublicKey.toLowerCase();
   const protocolChainCode = body.protocolChainCode.toLowerCase();
@@ -207,29 +279,37 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
     vaultId,
     protocolPublicKey
   });
-  await ensureWallet(wallet);
+  const walletCreated = await ensureWallet(wallet);
+  await ensureWallet(vaultWallet);
+
+  // Ensure the funding wallet watches the user's payment address
+  try {
+    const importStatus = await importPaymentDescriptor(wallet, body.payment.publicKey);
+    if (importStatus === 'imported') {
+      console.info('[mintService] payment descriptor imported; waiting for rescan', { wallet, walletCreated });
+      await waitForWalletRescan(wallet);
+    } else if (walletCreated) {
+      // Wallet was just created but descriptor already existed (unlikely). Force rescan once.
+      console.info('[mintService] wallet newly created but descriptor duplicate; forcing rescan', { wallet });
+      await runCliJson(['rescanblockchain'], { wallet });
+      await waitForWalletRescan(wallet);
+    }
+  } catch (e: any) {
+    console.warn('[mintService] importPaymentDescriptor warning (continuing)', { message: e?.message });
+  }
 
   const descriptor = buildDescriptor(protocolPublicKey, body.payment.publicKey);
   const descriptorInfo = await getDescriptorInfo(descriptor);
   const descriptorWithChecksum = descriptorInfo.descriptor; // already contains #checksum
 
-  await importDescriptor(wallet, descriptorWithChecksum);
+  // Import vault descriptor into dedicated vault watch-only wallet, not the funding wallet
+  try {
+    await importDescriptor(vaultWallet, descriptorWithChecksum);
+  } catch (e: any) {
+    console.warn('[mintService] import vault descriptor warning (continuing)', { message: e?.message, wallet: vaultWallet });
+  }
   const vaultAddress = await deriveVaultAddress(descriptorWithChecksum);
-  console.info('[mintService] descriptor ready', { wallet, vaultAddress, vaultId });
-
-  await vaultStore.recordVault({
-    vaultId,
-    protocolPublicKey,
-    protocolChainCode,
-    vaultAddress,
-    descriptor: descriptorWithChecksum,
-    metadata: {
-      rune: body.rune,
-      feeRate: body.feeRate,
-      ordinalsAddress: body.ordinals.address,
-      paymentAddress: body.payment.address
-    }
-  });
+  console.info('[mintService] descriptor ready', { wallet, vaultWallet, vaultAddress, vaultId });
 
   const resolvedAmounts = resolveAmounts(body.amounts);
   const feeRecipientAddr = config.feeRecipientAddress;
@@ -335,6 +415,11 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
     inputs,
     changeOutput: changeOutput
       ? { address: body.payment.address, amountBtc: changeOutput.value.toFixed(8) }
-      : undefined
+      : undefined,
+    collateralSats: resolvedAmounts.vaultSats,
+    rune: body.rune,
+    feeRate: body.feeRate,
+    ordinalsAddress: body.ordinals.address,
+    paymentAddress: body.payment.address
   };
 }

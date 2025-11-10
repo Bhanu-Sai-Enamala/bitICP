@@ -176,6 +176,34 @@ Successful responses contain the finalized PSBT and the intermediate artifacts:
 }
 ```
 
+### Endpoint: `GET /vaults?payment=<address>`
+
+Returns the vault history recorded for a payment address. Requires the same `x-api-key` header:
+
+```
+{
+  "paymentAddress": "tb1q...",
+  "vaults": [
+    {
+      "vaultId": "12",
+      "vaultAddress": "tb1p...",
+      "protocolPublicKey": "...",
+      "protocolChainCode": "...",
+      "collateralSats": 25811,
+      "createdAt": 1731260400000,
+      "metadata": {
+        "rune": "USDBZ•STABLECOIN",
+        "feeRate": 12,
+        "ordinalsAddress": "tb1p...",
+        "paymentAddress": "tb1q..."
+      }
+    }
+  ]
+}
+```
+
+The frontend fetches this list (via the stablecoin canister) so users can see previously minted vaults.
+
 ### What the service automates
 
 1. Creates/loads a watch-only wallet named after the user payment address.

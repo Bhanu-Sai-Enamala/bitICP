@@ -34,4 +34,9 @@ export interface MintPsbtResult {
   rawTransactionHex: string;
   inputs: Array<{ txid: string; vout: number }>;
   changeOutput?: { address: string; amountBtc: string };
+  collateralSats: number;
+  rune: string;
+  feeRate: number;
+  ordinalsAddress: string;
+  paymentAddress: string;
 }

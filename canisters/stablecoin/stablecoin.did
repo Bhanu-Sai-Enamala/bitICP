@@ -37,12 +37,30 @@ type MintResult = record {
   raw_transaction_hex : text;
   inputs : vec InputRef;
   change_output : opt ChangeOutput;
+  collateral_sats : nat64;
+  rune : text;
+  fee_rate : float64;
+  ordinals_address : text;
+  payment_address : text;
 };
 
 type MintResponse = record {
   rune : text;
   fee_rate : float64;
   result : MintResult;
+};
+
+type VaultSummary = record {
+  vault_id : text;
+  vault_address : text;
+  collateral_sats : nat64;
+  protocol_public_key : text;
+  created_at : nat64;
+  rune : text;
+  fee_rate : float64;
+  ordinals_address : text;
+  payment_address : text;
+  txid : opt text;
 };
 
 type BuildPsbtRequest = record {
@@ -61,4 +79,5 @@ service : {
   get_backend_config: () -> (BackendConfig) query;
   set_backend_config: (text, opt text) -> ();
   build_psbt: (BuildPsbtRequest) -> (variant { Ok : MintResponse; Err : text });
+  list_user_vaults: (text) -> (variant { Ok : vec VaultSummary; Err : text });
 }

@@ -23,6 +23,11 @@ interface BuildPsbtOk {
       inputs: Array<{ txid: string; vout: number }>;
       change_output: [{ address: string; amount_btc: string }] | [];
       wallet: string;
+      collateral_sats: bigint;
+      rune: string;
+      fee_rate: number;
+      ordinals_address: string;
+      payment_address: string;
     };
   };
 }
@@ -33,6 +38,25 @@ interface VaultMeta {
   protocolPublicKey: string;
   protocolChainCode: string;
   vaultAddress: string;
+  descriptor: string;
+  collateralSats: number;
+  rune: string;
+  feeRate: number;
+  ordinalsAddress: string;
+  paymentAddress: string;
+}
+
+interface VaultSummary {
+  vault_id: string;
+  vault_address: string;
+  collateral_sats: bigint;
+  protocol_public_key: string;
+  created_at: bigint;
+  rune: string;
+  fee_rate: number;
+  ordinals_address: string;
+  payment_address: string;
+  txid: [string] | [];
 }
 
 const DEFAULT_ORDINALS_ADDRESS =
@@ -43,6 +67,8 @@ const DEFAULT_PAYMENT_ADDRESS = 'tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd';
 const DEFAULT_PAYMENT_PUBKEY =
   '0273c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c';
 const DEFAULT_FEE_RECIPIENT = 'tb1pkde3l5fzut4n5h9m2jqfzwtn7q3j0eywl98h0rvg5swlvpra5wnqul27y2';
+const BACKEND_API_KEY = import.meta.env.VITE_BACKEND_API_KEY ?? '';
+const MEMPOOL_BASE_URL = 'https://mempool.space/testnet4/tx/';
 
 function truncate(addr?: string, size = 4) {
   if (!addr) return '';
@@ -65,6 +91,10 @@ export default function App() {
   const [ordinalsPubKey, setOrdinalsPubKey] = useState(DEFAULT_ORDINALS_PUBKEY);
   const [paymentAddress, setPaymentAddress] = useState(DEFAULT_PAYMENT_ADDRESS);
   const [paymentPubKey, setPaymentPubKey] = useState(DEFAULT_PAYMENT_PUBKEY);
+  const [vaults, setVaults] = useState<VaultSummary[]>([]);
+  const [isVaultsLoading, setIsVaultsLoading] = useState(false);
+  const [infoMessage, setInfoMessage] = useState<string>();
+  const [activeTab, setActiveTab] = useState<'mint' | 'withdraw'>('mint');
 
   useEffect(() => {
     (async () => {
@@ -88,7 +118,7 @@ export default function App() {
     }
 
     const response = (await actor.build_psbt({
-      rune: 'FOOLBYTHEDAY',
+      rune: 'USDBZ•STABLECOIN',
       fee_rate: 12,
       fee_recipient: DEFAULT_FEE_RECIPIENT,
       ordinals: {
@@ -120,7 +150,13 @@ export default function App() {
       vaultId: result.vault_id,
       protocolPublicKey: result.protocol_public_key,
       protocolChainCode: result.protocol_chain_code,
-      vaultAddress: result.vault_address
+      vaultAddress: result.vault_address,
+      descriptor: result.descriptor,
+      collateralSats: Number(result.collateral_sats),
+      rune: result.rune,
+      feeRate: result.fee_rate,
+      ordinalsAddress: result.ordinals_address,
+      paymentAddress: result.payment_address,
     });
     const psbt = result.patched_psbt;
     setPsbtBase64(psbt);
@@ -188,10 +224,80 @@ export default function App() {
     [xverseConnection]
   );
 
+  const loadVaults = useCallback(async (address: string) => {
+    if (!actor) return;
+    setIsVaultsLoading(true);
+    try {
+      const response = await actor.list_user_vaults(address);
+      if ('Ok' in response) {
+        setVaults(response.Ok);
+      } else {
+        console.warn('[frontend] list_user_vaults error', response.Err);
+      }
+    } catch (e) {
+      console.error('[frontend] list_user_vaults failed', e);
+    } finally {
+      setIsVaultsLoading(false);
+    }
+  }, [actor]);
+
+  useEffect(() => {
+    if (!actor || !paymentAccount) {
+      setVaults([]);
+      return;
+    }
+    loadVaults(paymentAccount.address);
+  }, [actor, paymentAccount, loadVaults]);
+
   const canSign = useMemo(
     () => Boolean(psbtBase64 && paymentAccount && mintInputCount > 0),
     [psbtBase64, paymentAccount, mintInputCount]
   );
+
+  const finalizeSignedPsbt = useCallback(async (signedPsbt: string) => {
+    if (!backendUrl) {
+      throw new Error('Backend URL not available. Configure the canister backend first.');
+    }
+    if (!vaultMeta) {
+      throw new Error('Missing vault metadata. Build another PSBT and try again.');
+    }
+    const base = backendUrl.trim().replace(/\/$/, '');
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (BACKEND_API_KEY) {
+      headers['x-api-key'] = BACKEND_API_KEY;
+    }
+    const vaultPayload = {
+      vaultAddress: vaultMeta.vaultAddress,
+      protocolPublicKey: vaultMeta.protocolPublicKey,
+      protocolChainCode: vaultMeta.protocolChainCode,
+      descriptor: vaultMeta.descriptor,
+      collateralSats: vaultMeta.collateralSats,
+      rune: vaultMeta.rune,
+      feeRate: vaultMeta.feeRate,
+      ordinalsAddress: vaultMeta.ordinalsAddress,
+      paymentAddress: vaultMeta.paymentAddress,
+    };
+
+    const response = await fetch(`${base}/mint/finalize`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        wallet: paymentAddress,
+        psbt: signedPsbt,
+        vaultId: vaultMeta.vaultId,
+        broadcast: true,
+        vault: vaultPayload,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.message ?? payload?.error ?? 'Failed to finalize PSBT');
+    }
+    setInfoMessage(payload?.txid ? `Broadcasted TXID: ${payload.txid}` : 'PSBT finalized');
+    if (paymentAccount) {
+      await loadVaults(paymentAccount.address);
+    }
+  }, [backendUrl, paymentAddress, vaultMeta, paymentAccount, loadVaults]);
 
   const handleSign = useCallback(async () => {
     if (!psbtBase64) {
@@ -206,18 +312,21 @@ export default function App() {
     try {
       const signed = await signPsbtWithXverse(psbtBase64, {
         signInputs: {
-          [paymentAccount.address]: Array.from({ length: mintInputCount }, (_, i) => i)
-        },
-        autoFinalize: false,
-        broadcast: false
-      });
-      console.log('[frontend] signed psbt', signed);
-      alert('Signed PSBT logged to console');
+      [paymentAccount.address]: Array.from({ length: mintInputCount }, (_, i) => i)
+    },
+    autoFinalize: false,
+    broadcast: false
+  });
+      await finalizeSignedPsbt(signed);
     } catch (e) {
       console.error('[frontend] signing failed', e);
       setError((e as Error).message);
     }
-  }, [psbtBase64, paymentAccount, mintInputCount]);
+  }, [psbtBase64, paymentAccount, mintInputCount, finalizeSignedPsbt]);
+
+  const handleWithdrawClick = useCallback((vault: VaultSummary) => {
+    setInfoMessage(`Withdraw flow coming soon for vault ${vault.vault_id}`);
+  }, []);
 
   return (
     <div className="container">
@@ -248,10 +357,21 @@ export default function App() {
         <section className="card">
           <div className="card-header">
             <nav className="tabs">
-              <div className="tab active">Mint</div>
-              <div className="tab">Withdraw</div>
+              <button
+                className={`tab ${activeTab === 'mint' ? 'active' : ''}`}
+                onClick={() => setActiveTab('mint')}
+              >
+                Mint
+              </button>
+              <button
+                className={`tab ${activeTab === 'withdraw' ? 'active' : ''}`}
+                onClick={() => setActiveTab('withdraw')}
+              >
+                Withdraw
+              </button>
             </nav>
           </div>
+          {activeTab === 'mint' && (
           <div className="card-body">
             <div className="section-title">Mint Inputs</div>
             <div className="muted" style={{ marginBottom: 12 }}>Paste from Xverse or use your own keys.</div>
@@ -300,10 +420,57 @@ export default function App() {
               </div>
             )}
 
+            {infoMessage && (
+              <div className="info" style={{ marginTop: 14 }}>{infoMessage}</div>
+            )}
+
             {error && (
               <div className="error" style={{ marginTop: 14 }}>Error: {error}</div>
             )}
           </div>
+          )}
+
+          {activeTab === 'withdraw' && (
+          <div className="card-body">
+            <div className="section-title">Your Vaults</div>
+            <div className="muted" style={{ marginBottom: 12 }}>
+              Broadcasted vaults appear here with tx links. Withdraw flow wired soon.
+            </div>
+            {isVaultsLoading && <div className="muted">Loading vaults…</div>}
+            {!isVaultsLoading && vaults.length === 0 && (
+              <div className="muted">No vaults yet. Mint to create your first one.</div>
+            )}
+            {!isVaultsLoading && vaults.length > 0 && (
+              <div className="vault-list">
+                {vaults.map((vault) => {
+                  const txid = vault.txid?.[0];
+                  return (
+                    <div key={`${vault.vault_id}-${vault.created_at}`} className="vault-card">
+                      <div className="vault-card-header">
+                        <strong>Vault #{vault.vault_id}</strong>
+                        <span>{(Number(vault.collateral_sats) / 1e8).toFixed(8)} BTC</span>
+                      </div>
+                      <div className="muted" style={{ marginBottom: 4 }}>
+                        Created {new Date(Number(vault.created_at)).toLocaleString()}
+                      </div>
+                      <div className="muted">Vault address: {truncate(vault.vault_address, 8)}</div>
+                      <div className="muted">Protocol key: {truncate(vault.protocol_public_key, 8)}</div>
+                      <div className="muted">Rune: {vault.rune}</div>
+                      {txid ? (
+                        <div className="muted">Tx: <a href={`${MEMPOOL_BASE_URL}${txid}`} target="_blank" rel="noreferrer">{truncate(txid, 10)}</a></div>
+                      ) : (
+                        <div className="muted">Tx: pending broadcast</div>
+                      )}
+                      <button className="btn btn-outline" style={{ marginTop: 8 }} onClick={() => handleWithdrawClick(vault)}>
+                        Withdraw
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          )}
         </section>
 
         <aside className="card">

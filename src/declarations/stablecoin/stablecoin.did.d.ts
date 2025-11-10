@@ -34,12 +34,32 @@ export interface MintResponse {
 export interface MintResult {
   'change_output' : [] | [ChangeOutput],
   'raw_transaction_hex' : string,
+  'ordinals_address' : string,
+  'rune' : string,
+  'protocol_public_key' : string,
+  'vault_id' : string,
   'descriptor' : string,
   'vault_address' : string,
+  'fee_rate' : number,
   'inputs' : Array<InputRef>,
   'wallet' : string,
   'original_psbt' : string,
+  'collateral_sats' : bigint,
+  'payment_address' : string,
+  'protocol_chain_code' : string,
   'patched_psbt' : string,
+}
+export interface VaultSummary {
+  'ordinals_address' : string,
+  'rune' : string,
+  'txid' : [] | [string],
+  'protocol_public_key' : string,
+  'vault_id' : string,
+  'created_at' : bigint,
+  'vault_address' : string,
+  'fee_rate' : number,
+  'collateral_sats' : bigint,
+  'payment_address' : string,
 }
 export interface _SERVICE {
   'build_psbt' : ActorMethod<
@@ -49,6 +69,11 @@ export interface _SERVICE {
   >,
   'get_backend_config' : ActorMethod<[], BackendConfig>,
   'health' : ActorMethod<[], string>,
+  'list_user_vaults' : ActorMethod<
+    [string],
+    { 'Ok' : Array<VaultSummary> } |
+      { 'Err' : string }
+  >,
   'ping' : ActorMethod<[], string>,
   'set_backend_config' : ActorMethod<[string, [] | [string]], undefined>,
   'version' : ActorMethod<[], string>,
