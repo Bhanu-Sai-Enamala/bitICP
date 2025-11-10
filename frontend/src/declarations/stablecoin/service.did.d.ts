@@ -31,6 +31,18 @@ export interface MintResponse {
   'rune' : string,
   'fee_rate' : number,
 }
+export interface VaultSummary {
+  'vault_id' : string,
+  'vault_address' : string,
+  'collateral_sats' : bigint,
+  'protocol_public_key' : string,
+  'created_at' : bigint,
+  'rune' : string,
+  'fee_rate' : number,
+  'ordinals_address' : string,
+  'payment_address' : string,
+  'txid' : [] | [string],
+}
 export interface MintResult {
   'wallet' : string,
   'vault_address' : string,
@@ -43,11 +55,21 @@ export interface MintResult {
   'raw_transaction_hex' : string,
   'inputs' : Array<InputRef>,
   'change_output' : [] | [ChangeOutput],
+  'collateral_sats' : bigint,
+  'rune' : string,
+  'fee_rate' : number,
+  'ordinals_address' : string,
+  'payment_address' : string,
 }
 export interface _SERVICE {
   'build_psbt' : ActorMethod<
     [BuildPsbtRequest],
     { 'Ok' : MintResponse } |
+      { 'Err' : string }
+  >,
+  'list_user_vaults' : ActorMethod<
+    [string],
+    { 'Ok' : Array<VaultSummary> } |
       { 'Err' : string }
   >,
   'get_backend_config' : ActorMethod<[], BackendConfig>,

@@ -25,11 +25,19 @@ export const idlFactory = ({ IDL }) => {
   const MintResult = IDL.Record({
     'change_output' : IDL.Opt(ChangeOutput),
     'raw_transaction_hex' : IDL.Text,
+    'ordinals_address' : IDL.Text,
+    'rune' : IDL.Text,
+    'protocol_public_key' : IDL.Text,
+    'vault_id' : IDL.Text,
     'descriptor' : IDL.Text,
     'vault_address' : IDL.Text,
+    'fee_rate' : IDL.Float64,
     'inputs' : IDL.Vec(InputRef),
     'wallet' : IDL.Text,
     'original_psbt' : IDL.Text,
+    'collateral_sats' : IDL.Nat64,
+    'payment_address' : IDL.Text,
+    'protocol_chain_code' : IDL.Text,
     'patched_psbt' : IDL.Text,
   });
   const MintResponse = IDL.Record({
@@ -41,6 +49,18 @@ export const idlFactory = ({ IDL }) => {
     'base_url' : IDL.Text,
     'api_key' : IDL.Opt(IDL.Text),
   });
+  const VaultSummary = IDL.Record({
+    'ordinals_address' : IDL.Text,
+    'rune' : IDL.Text,
+    'txid' : IDL.Opt(IDL.Text),
+    'protocol_public_key' : IDL.Text,
+    'vault_id' : IDL.Text,
+    'created_at' : IDL.Nat64,
+    'vault_address' : IDL.Text,
+    'fee_rate' : IDL.Float64,
+    'collateral_sats' : IDL.Nat64,
+    'payment_address' : IDL.Text,
+  });
   return IDL.Service({
     'build_psbt' : IDL.Func(
         [BuildPsbtRequest],
@@ -49,6 +69,11 @@ export const idlFactory = ({ IDL }) => {
       ),
     'get_backend_config' : IDL.Func([], [BackendConfig], ['query']),
     'health' : IDL.Func([], [IDL.Text], ['query']),
+    'list_user_vaults' : IDL.Func(
+        [IDL.Text],
+        [IDL.Variant({ 'Ok' : IDL.Vec(VaultSummary), 'Err' : IDL.Text })],
+        [],
+      ),
     'ping' : IDL.Func([], [IDL.Text], []),
     'set_backend_config' : IDL.Func([IDL.Text, IDL.Opt(IDL.Text)], [], []),
     'version' : IDL.Func([], [IDL.Text], ['query']),
