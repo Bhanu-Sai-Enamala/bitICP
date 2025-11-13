@@ -21,6 +21,8 @@ async function runCliRaw(
     cliArgs.push(`-rpcwallet=${wallet}`);
   }
   cliArgs.push(...args);
+  const cmdString = [config.bitcoinCliPath, ...cliArgs].join(' ');
+  console.info('[bitcoin-cli] executing', cmdString);
 
   try {
     const { stdout } = await execFileAsync(config.bitcoinCliPath, cliArgs, {

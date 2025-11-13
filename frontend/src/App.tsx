@@ -57,6 +57,29 @@ interface VaultSummary {
   ordinals_address: string;
   payment_address: string;
   txid: [string] | [];
+  withdraw_txid: [string] | [];
+}
+
+interface WithdrawInputRef {
+  txid: string;
+  vout: number;
+  value: number;
+}
+
+interface WithdrawPrepareOk {
+  vault_id: string;
+  psbt: string;
+  burn_metadata: string;
+  inputs: WithdrawInputRef[];
+  ordinals_address: string;
+  payment_address: string;
+  vault_address: string;
+}
+
+interface WithdrawFinalizeOk {
+  vault_id: string;
+  txid: [string] | [];
+  hex: string;
 }
 
 const DEFAULT_ORDINALS_ADDRESS =
@@ -95,6 +118,14 @@ export default function App() {
   const [isVaultsLoading, setIsVaultsLoading] = useState(false);
   const [infoMessage, setInfoMessage] = useState<string>();
   const [activeTab, setActiveTab] = useState<'mint' | 'withdraw'>('mint');
+  const [pendingWithdraw, setPendingWithdraw] = useState<{
+    vaultId: string;
+    psbt: string;
+    inputCount: number;
+  } | null>(null);
+  const [isWithdrawLoading, setIsWithdrawLoading] = useState(false);
+  const [withdrawInfo, setWithdrawInfo] = useState<string>();
+  const [withdrawError, setWithdrawError] = useState<string>();
 
   useEffect(() => {
     (async () => {
@@ -212,6 +243,9 @@ export default function App() {
       await disconnectXverse();
     } finally {
       setXverseConnection(null);
+      setPendingWithdraw(null);
+      setWithdrawInfo(undefined);
+      setWithdrawError(undefined);
     }
   }, []);
 
@@ -248,6 +282,12 @@ export default function App() {
     }
     loadVaults(paymentAccount.address);
   }, [actor, paymentAccount, loadVaults]);
+
+  useEffect(() => {
+    setPendingWithdraw(null);
+    setWithdrawInfo(undefined);
+    setWithdrawError(undefined);
+  }, [paymentAccount?.address]);
 
   const canSign = useMemo(
     () => Boolean(psbtBase64 && paymentAccount && mintInputCount > 0),
@@ -324,9 +364,85 @@ export default function App() {
     }
   }, [psbtBase64, paymentAccount, mintInputCount, finalizeSignedPsbt]);
 
-  const handleWithdrawClick = useCallback((vault: VaultSummary) => {
-    setInfoMessage(`Withdraw flow coming soon for vault ${vault.vault_id}`);
-  }, []);
+  const handleWithdrawClick = useCallback(async (vault: VaultSummary) => {
+    if (!actor) return;
+    if (!paymentAccount || !ordinalsAccount) {
+      setWithdrawError('Connect Xverse first to withdraw.');
+      return;
+    }
+    if (!vault.txid || vault.txid.length === 0) {
+      setWithdrawError('Vault transaction not yet broadcasted.');
+      return;
+    }
+    setWithdrawError(undefined);
+    setWithdrawInfo(undefined);
+    setIsWithdrawLoading(true);
+    try {
+      const response = await actor.prepare_withdraw(vault.vault_id);
+      if ('Ok' in response) {
+        const result = response.Ok as WithdrawPrepareOk;
+        setPendingWithdraw({
+          vaultId: result.vault_id,
+          psbt: result.psbt,
+          inputCount: result.inputs.length,
+        });
+        setWithdrawInfo('Withdraw PSBT ready. Sign with Xverse to complete.');
+        setActiveTab('withdraw');
+      } else {
+        setWithdrawError(response.Err);
+      }
+    } catch (e) {
+      setWithdrawError((e as Error).message);
+    } finally {
+      setIsWithdrawLoading(false);
+    }
+  }, [actor, ordinalsAccount, paymentAccount]);
+
+  const handleSignWithdraw = useCallback(async () => {
+    if (!actor || !pendingWithdraw) {
+      setWithdrawError('Prepare a withdraw PSBT first.');
+      return;
+    }
+    if (!paymentAccount || !ordinalsAccount) {
+      setWithdrawError('Connect Xverse first to sign.');
+      return;
+    }
+    setWithdrawError(undefined);
+    setWithdrawInfo(undefined);
+    setIsWithdrawLoading(true);
+    try {
+      const signInputs: Record<string, number[]> = {};
+      signInputs[ordinalsAccount.address] = [0];
+      const paymentIndex = pendingWithdraw.inputCount > 1 ? 1 : 0;
+      signInputs[paymentAccount.address] = [paymentIndex];
+
+      const signed = await signPsbtWithXverse(pendingWithdraw.psbt, {
+        signInputs,
+        autoFinalize: false,
+        broadcast: false
+      });
+
+      const finalized = await actor.finalize_withdraw({
+        vault_id: pendingWithdraw.vaultId,
+        signed_psbt: signed,
+        broadcast: [true],
+      });
+      if ('Ok' in finalized) {
+        const txid = finalized.Ok.txid?.[0];
+        setWithdrawInfo(txid ? `Withdraw broadcast: ${txid}` : 'Withdraw finalized.');
+        setPendingWithdraw(null);
+        if (paymentAccount) {
+          await loadVaults(paymentAccount.address);
+        }
+      } else {
+        setWithdrawError(finalized.Err);
+      }
+    } catch (e) {
+      setWithdrawError((e as Error).message);
+    } finally {
+      setIsWithdrawLoading(false);
+    }
+  }, [actor, pendingWithdraw, ordinalsAccount, paymentAccount, loadVaults]);
 
   return (
     <div className="container">
@@ -434,7 +550,7 @@ export default function App() {
           <div className="card-body">
             <div className="section-title">Your Vaults</div>
             <div className="muted" style={{ marginBottom: 12 }}>
-              Broadcasted vaults appear here with tx links. Withdraw flow wired soon.
+              Broadcasted vaults appear here with mint and withdraw tx links.
             </div>
             {isVaultsLoading && <div className="muted">Loading vaults…</div>}
             {!isVaultsLoading && vaults.length === 0 && (
@@ -444,6 +560,13 @@ export default function App() {
               <div className="vault-list">
                 {vaults.map((vault) => {
                   const txid = vault.txid?.[0];
+                  const withdrawTx = vault.withdraw_txid?.[0];
+                  const isPendingSelection =
+                    pendingWithdraw && pendingWithdraw.vaultId === vault.vault_id;
+                  const withdrawDisabled =
+                    Boolean(withdrawTx) ||
+                    isWithdrawLoading ||
+                    (pendingWithdraw !== null && !isPendingSelection);
                   return (
                     <div key={`${vault.vault_id}-${vault.created_at}`} className="vault-card">
                       <div className="vault-card-header">
@@ -456,18 +579,74 @@ export default function App() {
                       <div className="muted">Vault address: {truncate(vault.vault_address, 8)}</div>
                       <div className="muted">Protocol key: {truncate(vault.protocol_public_key, 8)}</div>
                       <div className="muted">Rune: {vault.rune}</div>
-                      {txid ? (
-                        <div className="muted">Tx: <a href={`${MEMPOOL_BASE_URL}${txid}`} target="_blank" rel="noreferrer">{truncate(txid, 10)}</a></div>
-                      ) : (
-                        <div className="muted">Tx: pending broadcast</div>
-                      )}
-                      <button className="btn btn-outline" style={{ marginTop: 8 }} onClick={() => handleWithdrawClick(vault)}>
-                        Withdraw
+                      <div className="muted">
+                        Mint TX:{' '}
+                        {txid ? (
+                          <a href={`${MEMPOOL_BASE_URL}${txid}`} target="_blank" rel="noreferrer">
+                            {truncate(txid, 10)}
+                          </a>
+                        ) : (
+                          'pending broadcast'
+                        )}
+                      </div>
+                      <div className="muted">
+                        Withdraw TX:{' '}
+                        {withdrawTx ? (
+                          <a
+                            href={`${MEMPOOL_BASE_URL}${withdrawTx}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {truncate(withdrawTx, 10)}
+                          </a>
+                        ) : (
+                          'not started'
+                        )}
+                      </div>
+                      <button
+                        className="btn btn-outline"
+                        style={{ marginTop: 8 }}
+                        onClick={() => handleWithdrawClick(vault)}
+                        disabled={withdrawDisabled}
+                      >
+                        {withdrawTx
+                          ? 'Withdrawn'
+                          : isPendingSelection
+                            ? 'Awaiting signature'
+                            : 'Withdraw'}
                       </button>
                     </div>
                   );
                 })}
               </div>
+            )}
+            {pendingWithdraw && (
+              <div className="vault-card" style={{ marginTop: 16 }}>
+                <div className="vault-card-header">
+                  <strong>Pending withdraw</strong>
+                  <span>Vault #{pendingWithdraw.vaultId}</span>
+                </div>
+                <div className="muted" style={{ marginBottom: 8 }}>
+                  PSBT prepared. Sign with Xverse to finalize.
+                </div>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleSignWithdraw}
+                  disabled={isWithdrawLoading}
+                >
+                  {isWithdrawLoading ? 'Finalizing…' : 'Sign & Finalize'}
+                </button>
+                <div style={{ marginTop: 10 }}>
+                  <div className="label" style={{ marginBottom: 6 }}>Withdraw PSBT (base64)</div>
+                  <pre className="codebox mono">{pendingWithdraw.psbt}</pre>
+                </div>
+              </div>
+            )}
+            {withdrawInfo && (
+              <div className="info" style={{ marginTop: 14 }}>{withdrawInfo}</div>
+            )}
+            {withdrawError && (
+              <div className="error" style={{ marginTop: 14 }}>{withdrawError}</div>
             )}
           </div>
           )}

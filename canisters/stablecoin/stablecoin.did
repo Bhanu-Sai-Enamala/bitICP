@@ -61,6 +61,7 @@ type VaultSummary = record {
   ordinals_address : text;
   payment_address : text;
   txid : opt text;
+  withdraw_txid : opt text;
 };
 
 type BuildPsbtRequest = record {
@@ -72,6 +73,46 @@ type BuildPsbtRequest = record {
   amounts : opt AmountOverrides;
 };
 
+type WithdrawInput = record {
+  txid : text;
+  vout : nat32;
+  value : float64;
+};
+
+type WithdrawPrepareResponse = record {
+  vault_id : text;
+  psbt : text;
+  burn_metadata : text;
+  inputs : vec WithdrawInput;
+  ordinals_address : text;
+  payment_address : text;
+  vault_address : text;
+};
+
+type WithdrawFinalizeRequest = record {
+  vault_id : text;
+  signed_psbt : text;
+  broadcast : opt bool;
+};
+
+type WithdrawFinalizeResponse = record {
+  vault_id : text;
+  txid : opt text;
+  hex : text;
+};
+
+type WithdrawSignRequest = record {
+  vault_id : text;
+  tapleaf_hash : vec nat8;
+  control_block : vec nat8;
+  sighash : vec nat8;
+  merkle_root : opt vec nat8;
+};
+
+type WithdrawSignResponse = record {
+  signature : vec nat8;
+};
+
 service : {
   health: () -> (text) query;
   version: () -> (text) query;
@@ -79,5 +120,8 @@ service : {
   get_backend_config: () -> (BackendConfig) query;
   set_backend_config: (text, opt text) -> ();
   build_psbt: (BuildPsbtRequest) -> (variant { Ok : MintResponse; Err : text });
+  prepare_withdraw: (text) -> (variant { Ok : WithdrawPrepareResponse; Err : text });
+  finalize_withdraw: (WithdrawFinalizeRequest) -> (variant { Ok : WithdrawFinalizeResponse; Err : text });
   list_user_vaults: (text) -> (variant { Ok : vec VaultSummary; Err : text });
-}
+  sign_withdraw: (WithdrawSignRequest) -> (variant { Ok : WithdrawSignResponse; Err : text });
+};
