@@ -1,169 +1,52 @@
 [
   {
-    "vaultId": "1",
-    "protocolPublicKey": "e82a76a863cea4e75dd3af3e2a788784335dad44939bb5d28bbc8382b3a56537",
-    "protocolChainCode": "c89a764ef02bd5031eb3ebdaa1052c9dee4c6076e601606b7b0f51106aac1055",
-    "vaultAddress": "tb1puf8c6mkf4rdhf8gzehsuvrafvlee4h6lxjdga036cas78gd9r9ws0zn4nz",
-    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,e82a76a863cea4e75dd3af3e2a788784335dad44939bb5d28bbc8382b3a56537,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#5eywfd6u",
-    "collateralSats": 24716,
-    "metadata": {
-      "rune": "USDBZ•STABLECOIN",
-      "feeRate": 12,
-      "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
-      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
-    },
-    "txid": "1483955ca025cb5f604c8786aaeb579566500a9ebe4cdde42f6b529be2f63eed",
-    "createdAt": 1762791669988
-  },
-  {
-    "vaultId": "2",
-    "protocolPublicKey": "7191c8c50c157a635c60d4caa763aea4026618d47b6d4cff45d8135038dca2f7",
-    "protocolChainCode": "dedec0dc1bd12c7481ee2b35b4259c849e7b824c69443829a5e30f8ea4b8f006",
-    "vaultAddress": "tb1p7arpxw987724q6mh9l0dk22xdnthh4kldgtvdjkrsqu74d4y2myqd4extq",
-    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,7191c8c50c157a635c60d4caa763aea4026618d47b6d4cff45d8135038dca2f7,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#hpjkep2u",
-    "collateralSats": 24701,
-    "metadata": {
-      "rune": "USDBZ•STABLECOIN",
-      "feeRate": 12,
-      "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
-      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
-    },
-    "txid": "3857e57e0160f06e33b9bb8ef66c56c21925143ccac460bfc494d1e3fba70a74",
-    "createdAt": 1762791767367
-  },
-  {
-    "vaultId": "3",
-    "protocolPublicKey": "b984b2356f5341c48de747c8f1ef0a48c986730a400d4eb762c24b42f815bf92",
-    "protocolChainCode": "c8c62f5ded480bddb3ac34fc8eccc4131606936651838d7ccdd2791340e3c3d0",
-    "vaultAddress": "tb1pcra67fg4r3pv95gx4l74fz5qftf7e6c2s444ytzcm2yq6z3cxe0svxy048",
-    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,b984b2356f5341c48de747c8f1ef0a48c986730a400d4eb762c24b42f815bf92,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#udh0h6zm",
-    "collateralSats": 24726,
-    "metadata": {
-      "rune": "USDBZ•STABLECOIN",
-      "feeRate": 12,
-      "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
-      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
-    },
-    "createdAt": 1762787757436
-  },
-  {
-    "vaultId": "5",
-    "protocolPublicKey": "5598291a49de244fae1448f311760024ca378bed8d191b595833aab331492ca7",
-    "protocolChainCode": "157f5e6204dbe4fa4d99704fd5434c8fde95a66388409489b7b8ade07f23627a",
-    "vaultAddress": "tb1p4qn4jet7zet3cj8u3yyu895vqkeku42z23f5qyf2776sz22eglas0n8ylc",
-    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,5598291a49de244fae1448f311760024ca378bed8d191b595833aab331492ca7,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#8evr38vk",
-    "metadata": {
-      "rune": "USDBZ•STABLECOIN",
-      "feeRate": 12,
-      "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
-      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
-    },
-    "createdAt": 1762758732617,
-    "collateralSats": 0
-  },
-  {
-    "vaultId": "6",
-    "protocolPublicKey": "e42067b062e8f087d29d878ab5292c9772a8c23373daacf781dd59968139f0ff",
-    "protocolChainCode": "98544dd93dfd4d4556ae26c85877918dff2bc5864b64abd19db2dc9a22717841",
-    "vaultAddress": "tb1pj08z2vuplt9dre5pdf8x8mt79ywyw6d6tmtze4lx68ax9qnr2ucsnegmad",
-    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,e42067b062e8f087d29d878ab5292c9772a8c23373daacf781dd59968139f0ff,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#txkkj9yx",
-    "metadata": {
-      "rune": "USDBZ•STABLECOIN",
-      "feeRate": 12,
-      "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
-      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
-    },
-    "createdAt": 1762759417999,
-    "collateralSats": 0
-  },
-  {
     "vaultId": "7",
-    "protocolPublicKey": "d8cefe72fd7e480c9018998a0154b188592859d5e9052fefb81fdf5ed6e24c99",
-    "protocolChainCode": "14985b6a042e39fed9002c4218ba50e24df7ebd6ffe6d6bb8d4a18b4a0e525d9",
-    "vaultAddress": "tb1p8rewt2j6tvzddl9jqcp026ajulpm9r0mr2set7a8076x2x2q9apsxf4yvc",
-    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,d8cefe72fd7e480c9018998a0154b188592859d5e9052fefb81fdf5ed6e24c99,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#rhf6xujf",
+    "protocolPublicKey": "52e5e8de6e1fd51834a96cf57a93a7748b5a07341f95d4bc57dfd962e66b119d",
+    "protocolChainCode": "26167aeb2f356c629cb0264ceb5c1cd9e6a50efa5e554611bc4f29ff6dab9e5e",
+    "vaultAddress": "tb1p77z2h8ujqa48ldpzejpq6v4wkljjmq49ldcpyyqwxu0zpu6ex9rqcuakwc",
+    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,52e5e8de6e1fd51834a96cf57a93a7748b5a07341f95d4bc57dfd962e66b119d,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#8g3qdpzn",
+    "collateralSats": 24750,
     "metadata": {
       "rune": "USDBZ•STABLECOIN",
       "feeRate": 12,
       "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
       "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
     },
-    "createdAt": 1762759590302,
-    "collateralSats": 0
+    "txid": "fa34534794ea53fa826cac055e23f0355268f26aa7dc40f28817fbe792838659",
+    "createdAt": 1762949942398,
+    "withdrawTxId": "44c32e624736d7dc937e935291c5605150722d363954908c3f5a9553c7a37da8"
   },
   {
     "vaultId": "8",
-    "protocolPublicKey": "8e95ff283e25cc516fab80f0f1381d9d53c079bf86ed40ec7795a172f6bca711",
-    "protocolChainCode": "bcd257fe88bf7a4a4258f8e4ef42c45b3829e9436837ede80d42c32e5065c2ab",
-    "vaultAddress": "tb1pc8ue550jw7yq5kqc2zmlsa7eay4wpfkq5x2znptlfvstrk5lqkkqn224f7",
-    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,8e95ff283e25cc516fab80f0f1381d9d53c079bf86ed40ec7795a172f6bca711,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#kk8kq0x8",
+    "protocolPublicKey": "9a8aa8c723aca7cd83410a7f4b433599252ab5fc552ff56f49a8389cc4b2a107",
+    "protocolChainCode": "fe5feed5e775e5155732f15ec563372ce7d0250a7ffd2b14a5ff21cf2c579794",
+    "vaultAddress": "tb1pc247cs4s79jgrqfuh309u2hk7x0gsrfje6d4cjmkyk0vjnlq2jzqf6n5ny",
+    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,9a8aa8c723aca7cd83410a7f4b433599252ab5fc552ff56f49a8389cc4b2a107,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#2q8xfrx8",
+    "collateralSats": 24740,
     "metadata": {
       "rune": "USDBZ•STABLECOIN",
       "feeRate": 12,
       "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
       "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
     },
-    "createdAt": 1762759979680,
-    "collateralSats": 0
+    "txid": "7386633475b63b3eb3542bdc175d1f8026075383fe285c8bb378eef44bb32a42",
+    "createdAt": 1762950071582
   },
   {
-    "vaultId": "9",
-    "protocolPublicKey": "083033904d76b778b8b6852c1820e7dc51a9670bdef58bd34a88ae9b476b1e9f",
-    "protocolChainCode": "34bf1a4c8f5e80162a2fc480396e1ae50f3d50d999b06799dafdc8eaa4bcd589",
-    "vaultAddress": "tb1p6ph47h8zj8spydqlgd5xrkdna4mrue95eahl3rjc4086wfc77kzqmvzrxh",
-    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,083033904d76b778b8b6852c1820e7dc51a9670bdef58bd34a88ae9b476b1e9f,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#7fnaz8z7",
+    "vaultId": "1762951703530564000",
+    "protocolPublicKey": "976a078c0a04398b50c9ba52902743facc499c1019aaef6766e30e6468377c85",
+    "protocolChainCode": "5ee1fd5f51767dbf4409bda1f45adb4cb6fd34d196402e5feefe51f6098b7c2d",
+    "vaultAddress": "tb1p3fjc6ql8pxf7fdtp3ersrwaukr60r83dsxywrkalwus8ze2c7uyqnxml5y",
+    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,976a078c0a04398b50c9ba52902743facc499c1019aaef6766e30e6468377c85,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#8na9uywp",
+    "collateralSats": 24783,
     "metadata": {
       "rune": "USDBZ•STABLECOIN",
       "feeRate": 12,
       "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
       "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
     },
-    "createdAt": 1762760538395,
-    "collateralSats": 0
-  },
-  {
-    "vaultId": "11",
-    "protocolPublicKey": "61ea3ea7c1b03c3538acdeb800a2d915ec3cd1089affa7b5ac7568fbd3da3be4",
-    "protocolChainCode": "2cab6dddbe74e945bd0f290a8459848a2ab0be9838e9860174dd459a6241bac0",
-    "vaultAddress": "tb1pxfnzvr09advjse08yjzmsqha65lajcx08f5rpmkae6a42vej66lsk92s8k",
-    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,61ea3ea7c1b03c3538acdeb800a2d915ec3cd1089affa7b5ac7568fbd3da3be4,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#zqz9py34",
-    "metadata": {
-      "rune": "USDBZ•STABLECOIN",
-      "feeRate": 12,
-      "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
-      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
-    },
-    "createdAt": 1762761216685,
-    "collateralSats": 0
-  },
-  {
-    "vaultId": "12",
-    "protocolPublicKey": "d0b433aa22548f7d5d651d4a8ac4a80ba8c7db13e16114b2964813065b1169bc",
-    "protocolChainCode": "a57c2346d738773b2438f8aa6d40e441db2d85196a90674867b986540661d3c5",
-    "vaultAddress": "tb1pm9802h97cawswvjskzf6n7793arfcy4vzkhdaxy0y4pmhptl5rnsu40ap9",
-    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,d0b433aa22548f7d5d651d4a8ac4a80ba8c7db13e16114b2964813065b1169bc,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#dvep8ctq",
-    "metadata": {
-      "rune": "USDBZ•STABLECOIN",
-      "feeRate": 12,
-      "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
-      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
-    },
-    "createdAt": 1762761287597,
-    "collateralSats": 0
-  },
-  {
-    "vaultId": "4",
-    "protocolPublicKey": "a67a288775576fda7c15e35262bffb34600a1cf9312b64f7f7e07768179503dc",
-    "protocolChainCode": "a322332f7929052110648c1b2470a610e41b8e75df5bc3ff890791148e517508",
-    "vaultAddress": "tb1pd7mvlmqptqltul3f9aly79xxz68t7d596lsk5ywr4vzgpmww4ehsxwyxnp",
-    "descriptor": "tr(b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1,{multi_a(2,a67a288775576fda7c15e35262bffb34600a1cf9312b64f7f7e07768179503dc,73c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c),multi_a(2,65f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363,cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663)})#5g9kwex4",
-    "collateralSats": 24743,
-    "metadata": {
-      "rune": "USDBZ•STABLECOIN",
-      "feeRate": 12,
-      "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
-      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
-    },
-    "createdAt": 1762788147542
+    "txid": "139cb91c8b987b0dee193e6695e903525c09d4e3e08b28a6159d6b9c8bad1869",
+    "createdAt": 1762951812483,
+    "withdrawTxId": "8ac5f95d5952a1307e58d3855e79287836eff8a1088d47885de84e153ca0061e"
   }
 ]

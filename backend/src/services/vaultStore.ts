@@ -20,6 +20,7 @@ export interface VaultRecord {
   createdAt: number;
   collateralSats: number;
   txid?: string;
+  withdrawTxId?: string;
 }
 
 class VaultStore {
@@ -101,6 +102,15 @@ class VaultStore {
     this.records.set(vaultId, { ...found, txid });
     await this.persist();
     console.info('[vaultStore] txid recorded', { vaultId, txid });
+  }
+
+  async setWithdrawTxId(vaultId: string, txid: string): Promise<void> {
+    await this.ready;
+    const found = this.records.get(vaultId);
+    if (!found) return;
+    this.records.set(vaultId, { ...found, withdrawTxId: txid });
+    await this.persist();
+    console.info('[vaultStore] withdraw txid recorded', { vaultId, txid });
   }
 }
 

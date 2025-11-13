@@ -43,6 +43,10 @@ function xOnly(hex: string): string {
   throw new Error(`invalid pubkey length for x-only conversion: len=${hex.length}`);
 }
 
+export function sanitizeWalletName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
 function buildDescriptor(protocolXOnly: string, userCompressed33: string): string {
   const internal = xOnly(config.guardianPublicKey);
   const userX = xOnly(userCompressed33);
@@ -110,6 +114,23 @@ async function importDescriptor(
       timestamp: "now",
       active: false,
       label: 'vault'
+    }
+  ];
+  await runCliJson(['importdescriptors', JSON.stringify(payload)], { wallet });
+}
+
+async function importOrdinalsDescriptor(
+  wallet: string,
+  ordinalsXOnly: string
+): Promise<void> {
+  const descriptor = `tr(${ordinalsXOnly})`;
+  const info = await getDescriptorInfo(descriptor);
+  const payload = [
+    {
+      desc: info.descriptor,
+      timestamp: "now",
+      active: false,
+      label: 'ordinals'
     }
   ];
   await runCliJson(['importdescriptors', JSON.stringify(payload)], { wallet });
@@ -267,6 +288,7 @@ async function waitForWalletRescan(wallet: string): Promise<void> {
 export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResult> {
   const wallet = body.payment.address; // funding wallet (watch-only of user's payment key)
   const vaultWallet = `vault-${body.vaultId}`; // separate watch-only wallet that tracks vault descriptors
+  const ordinalsWallet = `ord-${sanitizeWalletName(body.ordinals.address)}`;
   const vaultId = body.vaultId;
   const protocolPublicKey = body.protocolPublicKey.toLowerCase();
   const protocolChainCode = body.protocolChainCode.toLowerCase();
@@ -281,6 +303,7 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
   });
   const walletCreated = await ensureWallet(wallet);
   await ensureWallet(vaultWallet);
+  await ensureWallet(ordinalsWallet);
 
   // Ensure the funding wallet watches the user's payment address
   try {
@@ -307,6 +330,11 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
     await importDescriptor(vaultWallet, descriptorWithChecksum);
   } catch (e: any) {
     console.warn('[mintService] import vault descriptor warning (continuing)', { message: e?.message, wallet: vaultWallet });
+  }
+  try {
+    await importOrdinalsDescriptor(ordinalsWallet, xOnly(body.ordinals.publicKey));
+  } catch (e: any) {
+    console.warn('[mintService] ordinals descriptor warning (continuing)', { message: e?.message, wallet: ordinalsWallet });
   }
   const vaultAddress = await deriveVaultAddress(descriptorWithChecksum);
   console.info('[mintService] descriptor ready', { wallet, vaultWallet, vaultAddress, vaultId });

@@ -3,6 +3,7 @@ import morgan from 'morgan';
 import { config } from './config.js';
 import mintRouter from './routes/mint.js';
 import vaultRouter from './routes/vaults.js';
+import withdrawRouter from './routes/withdraw.js';
 
 const app = express();
 
@@ -24,6 +25,7 @@ app.get('/health', (_req, res) => {
 
 app.use('/mint', mintRouter);
 app.use('/vaults', vaultRouter);
+app.use('/withdraw', withdrawRouter);
 
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   console.error('Unhandled error', err);

@@ -50,6 +50,7 @@ export interface MintResult {
   'patched_psbt' : string,
 }
 export interface VaultSummary {
+  'withdraw_txid' : [] | [string],
   'ordinals_address' : string,
   'rune' : string,
   'txid' : [] | [string],
@@ -61,10 +62,47 @@ export interface VaultSummary {
   'collateral_sats' : bigint,
   'payment_address' : string,
 }
+export interface WithdrawFinalizeRequest {
+  'vault_id' : string,
+  'signed_psbt' : string,
+  'broadcast' : [] | [boolean],
+}
+export interface WithdrawFinalizeResponse {
+  'hex' : string,
+  'txid' : [] | [string],
+  'vault_id' : string,
+}
+export interface WithdrawInput {
+  'value' : number,
+  'txid' : string,
+  'vout' : number,
+}
+export interface WithdrawPrepareResponse {
+  'ordinals_address' : string,
+  'psbt' : string,
+  'burn_metadata' : string,
+  'vault_id' : string,
+  'vault_address' : string,
+  'inputs' : Array<WithdrawInput>,
+  'payment_address' : string,
+}
+export interface WithdrawSignRequest {
+  'sighash' : Uint8Array | number[],
+  'vault_id' : string,
+  'merkle_root' : [] | [Uint8Array | number[]],
+  'tapleaf_hash' : Uint8Array | number[],
+  'control_block' : Uint8Array | number[],
+}
+export interface WithdrawSignResponse { 'signature' : Uint8Array | number[] }
 export interface _SERVICE {
   'build_psbt' : ActorMethod<
     [BuildPsbtRequest],
     { 'Ok' : MintResponse } |
+      { 'Err' : string }
+  >,
+  'finalize_withdraw' : ActorMethod<
+    [WithdrawFinalizeRequest],
+    { 'Ok' : WithdrawFinalizeResponse } |
       { 'Err' : string }
   >,
   'get_backend_config' : ActorMethod<[], BackendConfig>,
@@ -75,7 +113,17 @@ export interface _SERVICE {
       { 'Err' : string }
   >,
   'ping' : ActorMethod<[], string>,
+  'prepare_withdraw' : ActorMethod<
+    [string],
+    { 'Ok' : WithdrawPrepareResponse } |
+      { 'Err' : string }
+  >,
   'set_backend_config' : ActorMethod<[string, [] | [string]], undefined>,
+  'sign_withdraw' : ActorMethod<
+    [WithdrawSignRequest],
+    { 'Ok' : WithdrawSignResponse } |
+      { 'Err' : string }
+  >,
   'version' : ActorMethod<[], string>,
 }
 export declare const idlFactory: IDL.InterfaceFactory;

@@ -42,6 +42,7 @@ export interface VaultSummary {
   'ordinals_address' : string,
   'payment_address' : string,
   'txid' : [] | [string],
+  'withdraw_txid' : [] | [string],
 }
 export interface MintResult {
   'wallet' : string,
@@ -67,6 +68,21 @@ export interface _SERVICE {
     { 'Ok' : MintResponse } |
       { 'Err' : string }
   >,
+  'prepare_withdraw' : ActorMethod<
+    [string],
+    { 'Ok' : WithdrawPrepareResponse } |
+      { 'Err' : string }
+  >,
+  'finalize_withdraw' : ActorMethod<
+    [WithdrawFinalizeRequest],
+    { 'Ok' : WithdrawFinalizeResponse } |
+      { 'Err' : string }
+  >,
+  'sign_withdraw' : ActorMethod<
+    [WithdrawSignRequest],
+    { 'Ok' : WithdrawSignResponse } |
+      { 'Err' : string }
+  >,
   'list_user_vaults' : ActorMethod<
     [string],
     { 'Ok' : Array<VaultSummary> } |
@@ -80,3 +96,31 @@ export interface _SERVICE {
 }
 export declare const idlFactory: IDL.InterfaceFactory;
 export declare const init: (args: { IDL: typeof IDL }) => IDL.Type[];
+export interface WithdrawInput { 'txid' : string, 'value' : number, 'vout' : number }
+export interface WithdrawSignRequest {
+  'vault_id' : string,
+  'tapleaf_hash' : Array<number>,
+  'control_block' : Array<number>,
+  'sighash' : Array<number>,
+  'merkle_root' : [] | [Array<number>],
+}
+export interface WithdrawSignResponse { 'signature' : Array<number> }
+export interface WithdrawPrepareResponse {
+  'vault_id' : string,
+  'psbt' : string,
+  'burn_metadata' : string,
+  'inputs' : Array<WithdrawInput>,
+  'ordinals_address' : string,
+  'payment_address' : string,
+  'vault_address' : string,
+}
+export interface WithdrawFinalizeRequest {
+  'vault_id' : string,
+  'signed_psbt' : string,
+  'broadcast' : [] | [boolean],
+}
+export interface WithdrawFinalizeResponse {
+  'vault_id' : string,
+  'txid' : [] | [string],
+  'hex' : string,
+}

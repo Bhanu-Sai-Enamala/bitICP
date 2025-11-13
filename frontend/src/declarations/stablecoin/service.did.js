@@ -56,7 +56,40 @@ export const idlFactory = ({ IDL }) => {
     'ordinals_address' : IDL.Text,
     'payment_address' : IDL.Text,
     'txid' : IDL.Opt(IDL.Text),
+    'withdraw_txid' : IDL.Opt(IDL.Text),
   });
+  const WithdrawInput = IDL.Record({
+    'txid' : IDL.Text,
+    'value' : IDL.Float64,
+    'vout' : IDL.Nat32,
+  });
+  const WithdrawPrepareResponse = IDL.Record({
+    'vault_id' : IDL.Text,
+    'psbt' : IDL.Text,
+    'burn_metadata' : IDL.Text,
+    'inputs' : IDL.Vec(WithdrawInput),
+    'ordinals_address' : IDL.Text,
+    'payment_address' : IDL.Text,
+    'vault_address' : IDL.Text,
+  });
+  const WithdrawFinalizeRequest = IDL.Record({
+    'vault_id' : IDL.Text,
+    'signed_psbt' : IDL.Text,
+    'broadcast' : IDL.Opt(IDL.Bool),
+  });
+  const WithdrawFinalizeResponse = IDL.Record({
+    'vault_id' : IDL.Text,
+    'txid' : IDL.Opt(IDL.Text),
+    'hex' : IDL.Text,
+  });
+  const WithdrawSignRequest = IDL.Record({
+    'vault_id' : IDL.Text,
+    'tapleaf_hash' : IDL.Vec(IDL.Nat8),
+    'control_block' : IDL.Vec(IDL.Nat8),
+    'sighash' : IDL.Vec(IDL.Nat8),
+    'merkle_root' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+  });
+  const WithdrawSignResponse = IDL.Record({ 'signature' : IDL.Vec(IDL.Nat8) });
   const BackendConfig = IDL.Record({
     'base_url' : IDL.Text,
     'api_key' : IDL.Opt(IDL.Text),
@@ -67,9 +100,31 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Variant({ 'Ok' : MintResponse, 'Err' : IDL.Text })],
         [],
       ),
+    'prepare_withdraw' : IDL.Func(
+        [IDL.Text],
+        [
+          IDL.Variant({ 'Ok' : WithdrawPrepareResponse, 'Err' : IDL.Text })
+        ],
+        [],
+      ),
+    'finalize_withdraw' : IDL.Func(
+        [WithdrawFinalizeRequest],
+        [
+          IDL.Variant({
+            'Ok' : WithdrawFinalizeResponse,
+            'Err' : IDL.Text,
+          })
+        ],
+        [],
+      ),
     'list_user_vaults' : IDL.Func(
         [IDL.Text],
         [IDL.Variant({ 'Ok' : IDL.Vec(VaultSummary), 'Err' : IDL.Text })],
+        [],
+      ),
+    'sign_withdraw' : IDL.Func(
+        [WithdrawSignRequest],
+        [IDL.Variant({ 'Ok' : WithdrawSignResponse, 'Err' : IDL.Text })],
         [],
       ),
     'get_backend_config' : IDL.Func([], [BackendConfig], ['query']),

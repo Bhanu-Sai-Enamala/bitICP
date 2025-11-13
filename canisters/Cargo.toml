@@ -3,3 +3,31 @@ members = [
     "stablecoin"
 ]
 resolver = "2"
+
+[patch.crates-io]
+k256 = { path = "vendor/k256-0.13.3" }
+ecdsa = { path = "vendor/ecdsa-0.16.9" }
+elliptic-curve = { path = "vendor/elliptic-curve-0.13.8" }
+signature = { path = "vendor/signature-2.2.0" }
+sha2 = { path = "vendor/sha2-0.10.8" }
+once_cell = { path = "vendor/once_cell-1.19.0" }
+cfg-if = { path = "vendor/cfg-if-1.0.0" }
+der = { path = "vendor/der-0.7.9" }
+spki = { path = "vendor/spki-0.7.3" }
+base16ct = { path = "vendor/base16ct-0.2.0" }
+crypto-bigint = { path = "vendor/crypto-bigint-0.5.5" }
+ff = { path = "vendor/ff-0.13.0" }
+group = { path = "vendor/group-0.13.0" }
+pkcs8 = { path = "vendor/pkcs8-0.10.2" }
+sec1 = { path = "vendor/sec1-0.7.3" }
+const-oid = { path = "vendor/const-oid-0.9.6" }
+digest = { path = "vendor/digest-0.10.7" }
+crypto-common = { path = "vendor/crypto-common-0.1.6" }
+block-buffer = { path = "vendor/block-buffer-0.10.4" }
+generic-array = { path = "vendor/generic-array-0.14.7" }
+typenum = { path = "vendor/typenum-1.17.0" }
+subtle = { path = "vendor/subtle-2.6.1" }
+rand_core = { path = "vendor/rand_core-0.6.4" }
+zeroize = { path = "vendor/zeroize-1.8.1" }
+zeroize_derive = { path = "vendor/zeroize_derive-1.4.2" }
+cpufeatures = { path = "vendor/cpufeatures-0.2.12" }
