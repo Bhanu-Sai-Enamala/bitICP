@@ -47,7 +47,8 @@ export const config = {
   },
   fallbackBtcPriceUsd: Number(env.FALLBACK_BTC_PRICE_USD ?? 100_734.1),
   vaultMinConfirmations: Number(env.VAULT_MIN_CONFIRMATIONS ?? 6),
-  healthAtRiskRatioBps: Number(env.HEALTH_AT_RISK_RATIO_BPS ?? 15000)
+  healthAtRiskRatioBps: Number(env.HEALTH_AT_RISK_RATIO_BPS ?? 15000),
+  allowLegacyMint: env.ALLOW_LEGACY_MINT === 'true'
 };
 
 export function satsToBtcString(sats: number): string {

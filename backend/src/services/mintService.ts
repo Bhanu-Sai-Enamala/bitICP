@@ -310,8 +310,15 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
   const overrideOutputs = body.outputsOverrideJson;
 
   if (!overrideInputs?.length || !overrideOutputs) {
-    throw new Error('inputs_override_required');
+    if (!config.allowLegacyMint) {
+      throw new Error('inputs_override_required');
     }
+    console.info('[mintService] override inputs missing, falling back to legacy PSBT builder', {
+      wallet,
+      vaultId
+    });
+    return buildLegacyMintPsbt(body, descriptorWithChecksum, vaultAddress, resolvedAmounts);
+  }
 
   console.info('[mintService] override inputs/outputs provided', {
     wallet,
@@ -353,6 +360,80 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
     rawTransactionHex: patchedRawTx,
     inputs: overrideInputs.map(({ txid, vout }) => ({ txid, vout })),
     changeOutput: undefined,
+    collateralSats: resolvedAmounts.vaultSats,
+    rune: body.rune,
+    feeRate: body.feeRate,
+    ordinalsAddress: body.ordinals.address,
+    paymentAddress: body.payment.address
+  };
+}
+
+async function buildLegacyMintPsbt(
+  body: MintRequestBody,
+  descriptorWithChecksum: string,
+  vaultAddress: string,
+  resolvedAmounts: MintOutputAmounts
+): Promise<MintPsbtResult> {
+  const wallet = body.payment.address;
+  await ensureWallet(wallet);
+
+  const paymentImport = await importPaymentDescriptor(wallet, body.payment.publicKey);
+  if (paymentImport === 'imported') {
+    await waitForWalletRescan(wallet);
+  }
+
+  const ordinalsXOnly = xOnly(body.ordinals.publicKey);
+  await importOrdinalsDescriptor(wallet, ordinalsXOnly);
+
+  const outputs = buildOutputsObject(
+    body.ordinals.address,
+    config.feeRecipientAddress,
+    vaultAddress,
+    body.payment.address,
+    resolvedAmounts
+  );
+
+  const createOptions = {
+    includeWatching: true,
+    add_inputs: true,
+    changeAddress: body.payment.address,
+    fee_rate: body.feeRate,
+    subtractFeeFromOutputs: []
+  };
+
+  const funded = await runCliJson<WalletCreateFundedPsbtResult>(
+    [
+      'walletcreatefundedpsbt',
+      '[]',
+      JSON.stringify(outputs),
+      0,
+      JSON.stringify(createOptions)
+    ],
+    { wallet }
+  );
+
+  const updatedPsbt = await runCliRaw(['utxoupdatepsbt', funded.psbt]);
+  const decoded = await runCliJson<DecodedPsbt>(['decodepsbt', updatedPsbt]);
+
+  const changeOutput = findOutputByAddress(decoded.tx.vout, body.payment.address);
+
+  return {
+    wallet,
+    vaultAddress,
+    vaultId: body.vaultId,
+    protocolPublicKey: body.protocolPublicKey,
+    protocolChainCode: body.protocolChainCode,
+    descriptor: descriptorWithChecksum,
+    originalPsbt: funded.psbt,
+    patchedPsbt: updatedPsbt,
+    rawTransactionHex: '',
+    inputs: decoded.tx.vin.map((vin) => ({ txid: vin.txid, vout: vin.vout })),
+    changeOutput: changeOutput
+      ? {
+          address: body.payment.address,
+          amountBtc: changeOutput.value.toFixed(8)
+        }
+      : undefined,
     collateralSats: resolvedAmounts.vaultSats,
     rune: body.rune,
     feeRate: body.feeRate,
