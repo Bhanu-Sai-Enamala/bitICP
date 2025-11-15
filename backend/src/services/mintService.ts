@@ -406,7 +406,7 @@ async function buildLegacyMintPsbt(
       'walletcreatefundedpsbt',
       '[]',
       JSON.stringify(outputs),
-      0,
+      '0',
       JSON.stringify(createOptions)
     ],
     { wallet }
