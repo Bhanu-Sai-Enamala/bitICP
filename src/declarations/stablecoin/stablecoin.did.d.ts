@@ -16,6 +16,13 @@ export interface BackendConfig {
   'base_url' : string,
   'api_key' : [] | [string],
 }
+export interface CollateralPreview {
+  'price' : number,
+  'sats' : bigint,
+  'ratio_bps' : number,
+  'usd_cents' : number,
+  'using_fallback_price' : boolean,
+}
 export interface BuildPsbtRequest {
   'ordinals' : AddressBinding,
   'fee_recipient' : string,
@@ -60,7 +67,16 @@ export interface VaultSummary {
   'vault_address' : string,
   'fee_rate' : number,
   'collateral_sats' : bigint,
+  'locked_collateral_btc' : number,
   'payment_address' : string,
+  'confirmations' : number,
+  'min_confirmations' : number,
+  'withdrawable' : boolean,
+  'last_btc_price_usd' : [] | [number],
+  'collateral_ratio_bps' : [] | [number],
+  'mint_tokens' : [] | [number],
+  'mint_usd_cents' : [] | [bigint],
+  'health' : [] | [string],
 }
 export interface WithdrawFinalizeRequest {
   'vault_id' : string,
@@ -106,6 +122,11 @@ export interface _SERVICE {
       { 'Err' : string }
   >,
   'get_backend_config' : ActorMethod<[], BackendConfig>,
+  'get_collateral_preview' : ActorMethod<
+    [],
+    { 'Ok' : CollateralPreview } |
+      { 'Err' : string }
+  >,
   'health' : ActorMethod<[], string>,
   'list_user_vaults' : ActorMethod<
     [string],

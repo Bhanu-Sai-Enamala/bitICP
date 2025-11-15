@@ -10,11 +10,20 @@
       "rune": "USDBZ•STABLECOIN",
       "feeRate": 12,
       "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
-      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
+      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd",
+      "mintTokens": 0,
+      "mintUsdCents": 0
     },
     "txid": "fa34534794ea53fa826cac055e23f0355268f26aa7dc40f28817fbe792838659",
     "createdAt": 1762949942398,
-    "withdrawTxId": "44c32e624736d7dc937e935291c5605150722d363954908c3f5a9553c7a37da8"
+    "withdrawTxId": "44c32e624736d7dc937e935291c5605150722d363954908c3f5a9553c7a37da8",
+    "lockedCollateralBtc": 0.0002475,
+    "minConfirmations": 6,
+    "confirmations": 212,
+    "withdrawable": true,
+    "lastBtcPriceUsd": 96026,
+    "health": "confirmed",
+    "lastHealthCheck": 1763120648363
   },
   {
     "vaultId": "8",
@@ -27,10 +36,20 @@
       "rune": "USDBZ•STABLECOIN",
       "feeRate": 12,
       "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
-      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
+      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd",
+      "mintTokens": 0,
+      "mintUsdCents": 0
     },
     "txid": "7386633475b63b3eb3542bdc175d1f8026075383fe285c8bb378eef44bb32a42",
-    "createdAt": 1762950071582
+    "createdAt": 1762950071582,
+    "lockedCollateralBtc": 0.0002474,
+    "minConfirmations": 6,
+    "confirmations": 212,
+    "withdrawable": true,
+    "lastBtcPriceUsd": 96026,
+    "health": "confirmed",
+    "lastHealthCheck": 1763120648337,
+    "withdrawTxId": "52fe42f2856351f223395e0276b48ead4266b340662573b961665083484d298e"
   },
   {
     "vaultId": "1762951703530564000",
@@ -43,10 +62,19 @@
       "rune": "USDBZ•STABLECOIN",
       "feeRate": 12,
       "ordinalsAddress": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
-      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd"
+      "paymentAddress": "tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd",
+      "mintTokens": 0,
+      "mintUsdCents": 0
     },
     "txid": "139cb91c8b987b0dee193e6695e903525c09d4e3e08b28a6159d6b9c8bad1869",
     "createdAt": 1762951812483,
-    "withdrawTxId": "8ac5f95d5952a1307e58d3855e79287836eff8a1088d47885de84e153ca0061e"
+    "withdrawTxId": "8ac5f95d5952a1307e58d3855e79287836eff8a1088d47885de84e153ca0061e",
+    "lockedCollateralBtc": 0.00024783,
+    "minConfirmations": 6,
+    "confirmations": 212,
+    "withdrawable": true,
+    "lastBtcPriceUsd": 96026,
+    "health": "confirmed",
+    "lastHealthCheck": 1763120648293
   }
 ]

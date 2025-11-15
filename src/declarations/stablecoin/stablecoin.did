@@ -10,6 +10,14 @@ type AmountOverrides = record {
   vault_sats : opt nat64;
 };
 
+type CollateralPreview = record {
+  price : float64;
+  sats : nat64;
+  ratio_bps : nat16;
+  usd_cents : nat32;
+  using_fallback_price : bool;
+};
+
 type BackendConfig = record {
   base_url : text;
   api_key : opt text;
@@ -54,6 +62,7 @@ type VaultSummary = record {
   vault_id : text;
   vault_address : text;
   collateral_sats : nat64;
+  locked_collateral_btc : float64;
   protocol_public_key : text;
   created_at : nat64;
   rune : text;
@@ -62,6 +71,14 @@ type VaultSummary = record {
   payment_address : text;
   txid : opt text;
   withdraw_txid : opt text;
+  confirmations : nat32;
+  min_confirmations : nat32;
+  withdrawable : bool;
+  last_btc_price_usd : opt float64;
+  collateral_ratio_bps : opt nat32;
+  mint_tokens : opt float64;
+  mint_usd_cents : opt nat64;
+  health : opt text;
 };
 
 type BuildPsbtRequest = record {
@@ -118,6 +135,7 @@ service : {
   version: () -> (text) query;
   ping: () -> (text);
   get_backend_config: () -> (BackendConfig) query;
+  get_collateral_preview: () -> (variant { Ok : CollateralPreview; Err : text });
   set_backend_config: (text, opt text) -> ();
   build_psbt: (BuildPsbtRequest) -> (variant { Ok : MintResponse; Err : text });
   prepare_withdraw: (text) -> (variant { Ok : WithdrawPrepareResponse; Err : text });

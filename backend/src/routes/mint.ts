@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { buildMintPsbt } from '../services/mintService.js';
 import { MintRequestBody } from '../types.js';
-import { config } from '../config.js';
+import { config, SATS_PER_BTC } from '../config.js';
 import { vaultStore } from '../services/vaultStore.js';
 import { runCliJson, runCliRaw } from '../utils/bitcoinCli.js';
 
@@ -135,6 +135,9 @@ const finalizeVaultSchema = z.object({
   feeRate: z.number().positive(),
   ordinalsAddress: z.string().min(1),
   paymentAddress: z.string().min(1),
+  mintTokens: z.number().positive(),
+  mintUsdCents: z.number().int().positive(),
+  btcPriceUsd: z.number().positive(),
 });
 
 const finalizeSchema = z.object({
@@ -177,6 +180,11 @@ router.post('/finalize', async (req, res) => {
     if (broadcast !== false) {
       txid = await runCliRaw(['sendrawtransaction', hex]);
       if (vault && txid) {
+        const lockedCollateralBtc = vault.collateralSats / SATS_PER_BTC;
+        const mintedUsd = vault.mintUsdCents / 100;
+        const collateralUsd = lockedCollateralBtc * vault.btcPriceUsd;
+        const collateralRatioBps =
+          mintedUsd > 0 ? Math.round((collateralUsd / mintedUsd) * 10_000) : undefined;
         await vaultStore.recordVault({
           vaultId,
           protocolPublicKey: vault.protocolPublicKey,
@@ -184,11 +192,20 @@ router.post('/finalize', async (req, res) => {
           vaultAddress: vault.vaultAddress,
           descriptor: vault.descriptor,
           collateralSats: vault.collateralSats,
+          lockedCollateralBtc,
+          minConfirmations: config.vaultMinConfirmations,
+          confirmations: 0,
+          withdrawable: false,
+          lastBtcPriceUsd: vault.btcPriceUsd,
+          collateralRatioBps,
+          health: 'pending',
           metadata: {
             rune: vault.rune,
             feeRate: vault.feeRate,
             ordinalsAddress: vault.ordinalsAddress,
             paymentAddress: vault.paymentAddress,
+            mintTokens: vault.mintTokens,
+            mintUsdCents: vault.mintUsdCents,
           },
           txid,
         });
