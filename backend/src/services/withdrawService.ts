@@ -6,9 +6,10 @@ import { config, satsToBtcString } from '../config.js';
 import { vaultStore, type VaultRecord } from './vaultStore.js';
 import { runCliJson, runCliRaw } from '../utils/bitcoinCli.js';
 import { sanitizeWalletName } from './mintService.js';
+import { refreshVaultHealth } from './vaultHealth.js';
 
 const DEFAULT_BURN_METADATA = '00dde905020a00';
-const PAYMENT_WITHDRAW_SATS = 10_000; // 0.00010000 BTC
+const PAYMENT_WITHDRAW_SATS = 1_000; // Base payout 0.00001000 BTC; change gets added on top
 const PSBT_PARSE_OPTIONS = {
   allowUnknownInputs: true,
   allowUnknownOutputs: true,
@@ -24,8 +25,14 @@ interface RawTxInfo {
     scriptPubKey: {
       addresses?: string[];
       address?: string;
+      hex?: string;
     };
   }>;
+}
+
+interface WalletCreateFundedPsbtResult {
+  psbt: string;
+  fee: number;
 }
 
 function matchesAddress(entry: RawTxInfo['vout'][number], address: string): boolean {
@@ -34,6 +41,28 @@ function matchesAddress(entry: RawTxInfo['vout'][number], address: string): bool
   }
   const list = entry.scriptPubKey.addresses ?? [];
   return list.includes(address);
+}
+
+async function ensureWalletLoaded(wallet: string): Promise<void> {
+  if (!wallet) {
+    return;
+  }
+  try {
+    await runCliJson(['loadwallet', wallet]);
+  } catch (error: any) {
+    const message = (error?.message ?? '').toLowerCase();
+    if (
+      message.includes('duplicate -wallet filename specified') ||
+      message.includes('already loaded')
+    ) {
+      return;
+    }
+    if (message.includes('does not exist')) {
+      console.warn('[withdraw] payment wallet missing on node', { wallet });
+      throw error;
+    }
+    console.warn('[withdraw] loadwallet warning', { wallet, message: error?.message });
+  }
 }
 
 function patchWithdrawData(rawHex: string, burnData: string): string {
@@ -437,15 +466,19 @@ function analyzeVaultPsbt(psbtBase64: string, record: VaultRecord): ParsedPsbt {
 
 export async function prepareWithdraw(vaultId: string, burnMetadata?: string): Promise<WithdrawPrepareResult> {
   console.info('[withdraw] prepare start', { vaultId, burnMetadataProvided: Boolean(burnMetadata) });
-  const record = await vaultStore.getVault(vaultId);
-  if (!record) {
+  const stored = await vaultStore.getVault(vaultId);
+  if (!stored) {
     throw new Error('vault_not_found');
   }
+  const record = await refreshVaultHealth(stored);
   if (!record.txid) {
     throw new Error('vault_txid_missing');
   }
   if (record.withdrawTxId) {
     throw new Error('vault_already_withdrawn');
+  }
+  if (!record.withdrawable) {
+    throw new Error('vault_waiting_confirmations');
   }
 
   const txInfo = await runCliJson<RawTxInfo>(['getrawtransaction', record.txid, 'true']);
@@ -461,9 +494,73 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
     { txid: record.txid, vout: vaultEntry.n, value: vaultEntry.value },
   ];
 
+  const burnMetadataValue = (burnMetadata ?? DEFAULT_BURN_METADATA).toLowerCase();
+  const basePayoutBtc = Number(satsToBtcString(PAYMENT_WITHDRAW_SATS));
+  let changeAmountBtc = 0;
+  const paymentWallet = record.metadata.paymentAddress;
+  try {
+    if (ordEntry.scriptPubKey.hex && vaultEntry.scriptPubKey.hex) {
+      await ensureWalletLoaded(paymentWallet);
+      const walletInputs = [
+        {
+          txid: record.txid,
+          vout: ordEntry.n,
+          amount: ordEntry.value,
+          scriptPubKey: ordEntry.scriptPubKey.hex
+        },
+        {
+          txid: record.txid,
+          vout: vaultEntry.n,
+          amount: vaultEntry.value,
+          scriptPubKey: vaultEntry.scriptPubKey.hex
+        }
+      ];
+      const walletOutputs = {
+        data: burnMetadataValue,
+        [record.metadata.paymentAddress]: basePayoutBtc
+      };
+      const walletOptions = {
+        includeWatching: true,
+        add_inputs: false,
+        changeAddress: record.metadata.paymentAddress,
+        changePosition: 1,
+        fee_rate: record.metadata.feeRate ?? 10
+      };
+      const funded = await runCliJson<WalletCreateFundedPsbtResult>(
+        [
+          'walletcreatefundedpsbt',
+          JSON.stringify(walletInputs),
+          JSON.stringify(walletOutputs),
+          '0',
+          JSON.stringify(walletOptions)
+        ],
+        { wallet: paymentWallet }
+      );
+      const totalInputsBtc = ordEntry.value + vaultEntry.value;
+      changeAmountBtc = Math.max(totalInputsBtc - basePayoutBtc - funded.fee, 0);
+      console.info('[withdraw] change estimation', {
+        vaultId,
+        basePayoutBtc,
+        changeAmountBtc,
+        fee: funded.fee,
+        inputs: totalInputsBtc
+      });
+    } else {
+      console.warn('[withdraw] missing scriptPubKey hex; skipping wallet-funded change calc', {
+        vaultId
+      });
+    }
+  } catch (error: any) {
+    console.warn('[withdraw] change estimation failed; continuing without change', {
+      vaultId,
+      message: error?.message
+    });
+    changeAmountBtc = 0;
+  }
+
   const outputs = {
-    data: (burnMetadata ?? DEFAULT_BURN_METADATA).toLowerCase(),
-    [record.metadata.paymentAddress]: Number(satsToBtcString(PAYMENT_WITHDRAW_SATS)),
+    data: burnMetadataValue,
+    [record.metadata.paymentAddress]: Number((basePayoutBtc + changeAmountBtc).toFixed(8)),
   } as Record<string, string | number>;
 
   const rawTx = await runCliRaw([

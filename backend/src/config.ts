@@ -9,6 +9,8 @@ dotenv.config({ path: envPath, override: true });
 
 const env = process.env;
 
+export const SATS_PER_BTC = 100_000_000;
+
 function satsEnv(key: string, fallback: number): number {
   const value = env[key];
   if (!value) {
@@ -42,9 +44,12 @@ export const config = {
     ordinalsSats: satsEnv('DEFAULT_ORDINALS_SATS', 1000),
     feeRecipientSats: satsEnv('DEFAULT_FEE_RECIPIENT_SATS', 1000),
     vaultSats: satsEnv('DEFAULT_VAULT_SATS', 1000)
-  }
+  },
+  fallbackBtcPriceUsd: Number(env.FALLBACK_BTC_PRICE_USD ?? 100_734.1),
+  vaultMinConfirmations: Number(env.VAULT_MIN_CONFIRMATIONS ?? 6),
+  healthAtRiskRatioBps: Number(env.HEALTH_AT_RISK_RATIO_BPS ?? 15000)
 };
 
 export function satsToBtcString(sats: number): string {
-  return (sats / 1e8).toFixed(8);
+  return (sats / SATS_PER_BTC).toFixed(8);
 }

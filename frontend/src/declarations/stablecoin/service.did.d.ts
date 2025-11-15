@@ -16,6 +16,13 @@ export interface BackendConfig {
   'base_url' : string,
   'api_key' : [] | [string],
 }
+export interface CollateralPreview {
+  'price' : number,
+  'sats' : bigint,
+  'ratio_bps' : number,
+  'usd_cents' : number,
+  'using_fallback_price' : boolean,
+}
 export interface BuildPsbtRequest {
   'ordinals' : AddressBinding,
   'fee_recipient' : string,
@@ -31,88 +38,45 @@ export interface MintResponse {
   'rune' : string,
   'fee_rate' : number,
 }
-export interface VaultSummary {
-  'vault_id' : string,
-  'vault_address' : string,
-  'collateral_sats' : bigint,
-  'protocol_public_key' : string,
-  'created_at' : bigint,
-  'rune' : string,
-  'fee_rate' : number,
-  'ordinals_address' : string,
-  'payment_address' : string,
-  'txid' : [] | [string],
-  'withdraw_txid' : [] | [string],
-}
 export interface MintResult {
-  'wallet' : string,
-  'vault_address' : string,
-  'vault_id' : string,
-  'protocol_public_key' : string,
-  'protocol_chain_code' : string,
-  'descriptor' : string,
-  'original_psbt' : string,
-  'patched_psbt' : string,
-  'raw_transaction_hex' : string,
-  'inputs' : Array<InputRef>,
   'change_output' : [] | [ChangeOutput],
-  'collateral_sats' : bigint,
+  'raw_transaction_hex' : string,
+  'ordinals_address' : string,
   'rune' : string,
-  'fee_rate' : number,
-  'ordinals_address' : string,
-  'payment_address' : string,
-}
-export interface _SERVICE {
-  'build_psbt' : ActorMethod<
-    [BuildPsbtRequest],
-    { 'Ok' : MintResponse } |
-      { 'Err' : string }
-  >,
-  'prepare_withdraw' : ActorMethod<
-    [string],
-    { 'Ok' : WithdrawPrepareResponse } |
-      { 'Err' : string }
-  >,
-  'finalize_withdraw' : ActorMethod<
-    [WithdrawFinalizeRequest],
-    { 'Ok' : WithdrawFinalizeResponse } |
-      { 'Err' : string }
-  >,
-  'sign_withdraw' : ActorMethod<
-    [WithdrawSignRequest],
-    { 'Ok' : WithdrawSignResponse } |
-      { 'Err' : string }
-  >,
-  'list_user_vaults' : ActorMethod<
-    [string],
-    { 'Ok' : Array<VaultSummary> } |
-      { 'Err' : string }
-  >,
-  'get_backend_config' : ActorMethod<[], BackendConfig>,
-  'health' : ActorMethod<[], string>,
-  'ping' : ActorMethod<[], string>,
-  'set_backend_config' : ActorMethod<[string, [] | [string]], undefined>,
-  'version' : ActorMethod<[], string>,
-}
-export declare const idlFactory: IDL.InterfaceFactory;
-export declare const init: (args: { IDL: typeof IDL }) => IDL.Type[];
-export interface WithdrawInput { 'txid' : string, 'value' : number, 'vout' : number }
-export interface WithdrawSignRequest {
+  'protocol_public_key' : string,
   'vault_id' : string,
-  'tapleaf_hash' : Array<number>,
-  'control_block' : Array<number>,
-  'sighash' : Array<number>,
-  'merkle_root' : [] | [Array<number>],
-}
-export interface WithdrawSignResponse { 'signature' : Array<number> }
-export interface WithdrawPrepareResponse {
-  'vault_id' : string,
-  'psbt' : string,
-  'burn_metadata' : string,
-  'inputs' : Array<WithdrawInput>,
-  'ordinals_address' : string,
-  'payment_address' : string,
+  'descriptor' : string,
   'vault_address' : string,
+  'fee_rate' : number,
+  'inputs' : Array<InputRef>,
+  'wallet' : string,
+  'original_psbt' : string,
+  'collateral_sats' : bigint,
+  'payment_address' : string,
+  'protocol_chain_code' : string,
+  'patched_psbt' : string,
+}
+export interface VaultSummary {
+  'withdraw_txid' : [] | [string],
+  'ordinals_address' : string,
+  'rune' : string,
+  'txid' : [] | [string],
+  'protocol_public_key' : string,
+  'vault_id' : string,
+  'created_at' : bigint,
+  'vault_address' : string,
+  'fee_rate' : number,
+  'collateral_sats' : bigint,
+  'locked_collateral_btc' : number,
+  'payment_address' : string,
+  'confirmations' : number,
+  'min_confirmations' : number,
+  'withdrawable' : boolean,
+  'last_btc_price_usd' : [] | [number],
+  'collateral_ratio_bps' : [] | [number],
+  'mint_tokens' : [] | [number],
+  'mint_usd_cents' : [] | [bigint],
+  'health' : [] | [string],
 }
 export interface WithdrawFinalizeRequest {
   'vault_id' : string,
@@ -120,7 +84,68 @@ export interface WithdrawFinalizeRequest {
   'broadcast' : [] | [boolean],
 }
 export interface WithdrawFinalizeResponse {
-  'vault_id' : string,
-  'txid' : [] | [string],
   'hex' : string,
+  'txid' : [] | [string],
+  'vault_id' : string,
 }
+export interface WithdrawInput {
+  'value' : number,
+  'txid' : string,
+  'vout' : number,
+}
+export interface WithdrawPrepareResponse {
+  'ordinals_address' : string,
+  'psbt' : string,
+  'burn_metadata' : string,
+  'vault_id' : string,
+  'vault_address' : string,
+  'inputs' : Array<WithdrawInput>,
+  'payment_address' : string,
+}
+export interface WithdrawSignRequest {
+  'sighash' : Uint8Array | number[],
+  'vault_id' : string,
+  'merkle_root' : [] | [Uint8Array | number[]],
+  'tapleaf_hash' : Uint8Array | number[],
+  'control_block' : Uint8Array | number[],
+}
+export interface WithdrawSignResponse { 'signature' : Uint8Array | number[] }
+export interface _SERVICE {
+  'build_psbt' : ActorMethod<
+    [BuildPsbtRequest],
+    { 'Ok' : MintResponse } |
+      { 'Err' : string }
+  >,
+  'finalize_withdraw' : ActorMethod<
+    [WithdrawFinalizeRequest],
+    { 'Ok' : WithdrawFinalizeResponse } |
+      { 'Err' : string }
+  >,
+  'get_backend_config' : ActorMethod<[], BackendConfig>,
+  'get_collateral_preview' : ActorMethod<
+    [],
+    { 'Ok' : CollateralPreview } |
+      { 'Err' : string }
+  >,
+  'health' : ActorMethod<[], string>,
+  'list_user_vaults' : ActorMethod<
+    [string],
+    { 'Ok' : Array<VaultSummary> } |
+      { 'Err' : string }
+  >,
+  'ping' : ActorMethod<[], string>,
+  'prepare_withdraw' : ActorMethod<
+    [string],
+    { 'Ok' : WithdrawPrepareResponse } |
+      { 'Err' : string }
+  >,
+  'set_backend_config' : ActorMethod<[string, [] | [string]], undefined>,
+  'sign_withdraw' : ActorMethod<
+    [WithdrawSignRequest],
+    { 'Ok' : WithdrawSignResponse } |
+      { 'Err' : string }
+  >,
+  'version' : ActorMethod<[], string>,
+}
+export declare const idlFactory: IDL.InterfaceFactory;
+export declare const init: (args: { IDL: typeof IDL }) => IDL.Type[];

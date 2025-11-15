@@ -257,11 +257,22 @@ struct CollateralPreview {
     sats: u64,
     ratio_bps: u16,
     usd_cents: u32,
+    using_fallback_price: bool,
 }
 
 #[update]
 async fn get_collateral_preview() -> Result<CollateralPreview, String> {
-    let price = xrc_btc_usd_price().await?;
+    let (price, using_fallback_price) = match xrc_btc_usd_price().await {
+        Ok(p) => (p, false),
+        Err(e) => {
+            ic_cdk::println!(
+                "[get_collateral_preview] xrc price unavailable, using fallback {}: {}",
+                COLLATERAL_FALLBACK_PRICE_USD,
+                e
+            );
+            (COLLATERAL_FALLBACK_PRICE_USD, true)
+        }
+    };
     let (ratio_bps, usd_cents) = SETTINGS.with(|s| {
         let st = s.borrow();
         (st.collateral.ratio_bps, st.collateral.usd_cents)
@@ -272,6 +283,7 @@ async fn get_collateral_preview() -> Result<CollateralPreview, String> {
         sats,
         ratio_bps,
         usd_cents,
+        using_fallback_price,
     })
 }
 
@@ -613,6 +625,15 @@ struct BackendVaultRecord {
     metadata: BackendVaultMetadata,
     txid: Option<String>,
     withdraw_tx_id: Option<String>,
+    confirmations: Option<u32>,
+    min_confirmations: Option<u32>,
+    withdrawable: Option<bool>,
+    last_btc_price_usd: Option<f64>,
+    collateral_ratio_bps: Option<u32>,
+    locked_collateral_btc: Option<f64>,
+    mint_tokens: Option<f64>,
+    mint_usd_cents: Option<u64>,
+    health: Option<String>,
 }
 
 #[derive(Clone, CandidType, Deserialize, Serialize)]
@@ -669,6 +690,7 @@ struct VaultSummary {
     vault_id: String,
     vault_address: String,
     collateral_sats: u64,
+    locked_collateral_btc: f64,
     protocol_public_key: String,
     created_at: u64,
     rune: String,
@@ -677,6 +699,14 @@ struct VaultSummary {
     payment_address: String,
     txid: Option<String>,
     withdraw_txid: Option<String>,
+    confirmations: u32,
+    min_confirmations: u32,
+    withdrawable: bool,
+    last_btc_price_usd: Option<f64>,
+    collateral_ratio_bps: Option<u32>,
+    mint_tokens: Option<f64>,
+    mint_usd_cents: Option<u64>,
+    health: Option<String>,
 }
 
 #[derive(Clone, CandidType, Deserialize, Serialize)]
@@ -1211,18 +1241,35 @@ async fn list_user_vaults(payment_address: String) -> Result<Vec<VaultSummary>, 
     let mut summaries: Vec<VaultSummary> = parsed
         .vaults
         .into_iter()
-        .map(|record| VaultSummary {
-            vault_id: record.vault_id,
-            vault_address: record.vault_address,
-            collateral_sats: record.collateral_sats,
-            protocol_public_key: record.protocol_public_key,
-            created_at: record.created_at,
-            rune: record.metadata.rune,
-            fee_rate: record.metadata.fee_rate,
-            ordinals_address: record.metadata.ordinals_address,
-            payment_address: record.metadata.payment_address,
-            txid: record.txid,
-            withdraw_txid: record.withdraw_tx_id,
+        .map(|record| {
+            let min_confirmations = record.min_confirmations.unwrap_or(6);
+            let confirmations = record.confirmations.unwrap_or(0);
+            let withdrawable = record.withdrawable.unwrap_or(false);
+            let locked_btc = record
+                .locked_collateral_btc
+                .unwrap_or((record.collateral_sats as f64) / 100_000_000f64);
+            VaultSummary {
+                vault_id: record.vault_id,
+                vault_address: record.vault_address,
+                collateral_sats: record.collateral_sats,
+                locked_collateral_btc: locked_btc,
+                protocol_public_key: record.protocol_public_key,
+                created_at: record.created_at,
+                rune: record.metadata.rune,
+                fee_rate: record.metadata.fee_rate,
+                ordinals_address: record.metadata.ordinals_address,
+                payment_address: record.metadata.payment_address,
+                txid: record.txid,
+                withdraw_txid: record.withdraw_tx_id,
+                confirmations,
+                min_confirmations,
+                withdrawable,
+                last_btc_price_usd: record.last_btc_price_usd,
+                collateral_ratio_bps: record.collateral_ratio_bps,
+                mint_tokens: record.mint_tokens,
+                mint_usd_cents: record.mint_usd_cents,
+                health: record.health,
+            }
         })
         .collect();
 

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { config } from '../config.js';
 import { vaultStore } from '../services/vaultStore.js';
+import { refreshVaults } from '../services/vaultHealth.js';
 
 const router = Router();
 
@@ -22,7 +23,25 @@ router.get('/', async (req, res) => {
 
   try {
     const entries = await vaultStore.listVaultsByPayment(payment);
-    res.json({ paymentAddress: payment, vaults: entries });
+    const refreshed = await refreshVaults(entries);
+    const payload = refreshed.map((vault) => ({
+      ...vault,
+      confirmations: vault.confirmations ?? 0,
+      minConfirmations: vault.minConfirmations,
+      withdrawable: vault.withdrawable ?? false,
+      lockedCollateralBtc: vault.lockedCollateralBtc,
+      collateralRatioBps: vault.collateralRatioBps,
+      lastBtcPriceUsd: vault.lastBtcPriceUsd,
+      health: vault.health ?? 'pending',
+      mintTokens: vault.metadata.mintTokens,
+      mintUsdCents: vault.metadata.mintUsdCents
+    }));
+    console.info('[vaults:list] responding', {
+      payment,
+      count: payload.length,
+      sample: payload.slice(0, 1)
+    });
+    res.json({ paymentAddress: payment, vaults: payload });
   } catch (error: any) {
     console.error('[vaults:list] failed', { message: error?.message });
     res.status(500).json({ error: 'VAULT_LIST_FAILED', message: error?.message });

@@ -1,14 +1,18 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { config } from '../config.js';
+import { config, SATS_PER_BTC } from '../config.js';
 
 export interface VaultRecordMetadata {
   rune: string;
   feeRate: number;
   ordinalsAddress: string;
   paymentAddress: string;
+  mintTokens: number;
+  mintUsdCents: number;
 }
+
+export type VaultHealthStatus = 'pending' | 'confirmed' | 'at_risk';
 
 export interface VaultRecord {
   vaultId: string;
@@ -19,6 +23,14 @@ export interface VaultRecord {
   metadata: VaultRecordMetadata;
   createdAt: number;
   collateralSats: number;
+  lockedCollateralBtc: number;
+  minConfirmations: number;
+  confirmations: number;
+  withdrawable: boolean;
+  lastBtcPriceUsd?: number;
+  collateralRatioBps?: number;
+  health?: VaultHealthStatus;
+  lastHealthCheck?: number;
   txid?: string;
   withdrawTxId?: string;
 }
@@ -42,7 +54,7 @@ class VaultStore {
       const blob = await fsp.readFile(this.filePath, 'utf8');
       const parsed = JSON.parse(blob) as VaultRecord[];
       parsed
-        .map((record) => ({ ...record, collateralSats: record.collateralSats ?? 0 }))
+        .map((record) => this.normalize(record))
         .forEach((record) => this.records.set(record.vaultId, record));
       console.info('[vaultStore] bootstrap complete', { file: this.filePath, count: parsed.length });
     } catch (error: any) {
@@ -64,9 +76,36 @@ class VaultStore {
     await fsp.writeFile(this.filePath, payload, 'utf8');
   }
 
+  private normalize(record: VaultRecord): VaultRecord {
+    const legacyMeta = record.metadata ?? {
+      rune: 'UNKNOWN',
+      feeRate: 0,
+      ordinalsAddress: '',
+      paymentAddress: ''
+    };
+    const metadata: VaultRecordMetadata = {
+      rune: legacyMeta.rune,
+      feeRate: legacyMeta.feeRate,
+      ordinalsAddress: legacyMeta.ordinalsAddress,
+      paymentAddress: legacyMeta.paymentAddress,
+      mintTokens: legacyMeta.mintTokens ?? 0,
+      mintUsdCents: legacyMeta.mintUsdCents ?? 0
+    };
+    return {
+      ...record,
+      metadata,
+      collateralSats: record.collateralSats ?? 0,
+      lockedCollateralBtc:
+        record.lockedCollateralBtc ?? (record.collateralSats ?? 0) / SATS_PER_BTC,
+      minConfirmations: record.minConfirmations ?? config.vaultMinConfirmations,
+      confirmations: record.confirmations ?? 0,
+      withdrawable: record.withdrawable ?? false
+    };
+  }
+
   async recordVault(record: Omit<VaultRecord, 'createdAt'>): Promise<void> {
     await this.ready;
-    const enriched: VaultRecord = { ...record, createdAt: Date.now() };
+    const enriched: VaultRecord = this.normalize({ ...record, createdAt: Date.now() } as VaultRecord);
     this.records.set(record.vaultId, enriched);
     await this.persist();
     console.info('[vaultStore] recorded vault', {
@@ -108,9 +147,19 @@ class VaultStore {
     await this.ready;
     const found = this.records.get(vaultId);
     if (!found) return;
-    this.records.set(vaultId, { ...found, withdrawTxId: txid });
+    this.records.set(vaultId, { ...found, withdrawTxId: txid, withdrawable: false });
     await this.persist();
     console.info('[vaultStore] withdraw txid recorded', { vaultId, txid });
+  }
+
+  async updateVault(vaultId: string, patch: Partial<VaultRecord>): Promise<VaultRecord | undefined> {
+    await this.ready;
+    const found = this.records.get(vaultId);
+    if (!found) return undefined;
+    const merged = this.normalize({ ...found, ...patch } as VaultRecord);
+    this.records.set(vaultId, merged);
+    await this.persist();
+    return merged;
   }
 }
 

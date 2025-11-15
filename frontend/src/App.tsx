@@ -46,18 +46,54 @@ interface VaultMeta {
   paymentAddress: string;
 }
 
+type CandidOpt<T> = [] | [T];
+
 interface VaultSummary {
   vault_id: string;
   vault_address: string;
   collateral_sats: bigint;
+  locked_collateral_btc: number;
   protocol_public_key: string;
   created_at: bigint;
   rune: string;
   fee_rate: number;
   ordinals_address: string;
   payment_address: string;
-  txid: [string] | [];
-  withdraw_txid: [string] | [];
+  txid: CandidOpt<string>;
+  withdraw_txid: CandidOpt<string>;
+  confirmations: number;
+  min_confirmations: number;
+  withdrawable: boolean;
+  last_btc_price_usd: CandidOpt<number>;
+  collateral_ratio_bps: CandidOpt<number>;
+  mint_tokens: CandidOpt<number>;
+  mint_usd_cents: CandidOpt<bigint>;
+  health: CandidOpt<string>;
+}
+
+type VaultHealth = 'pending' | 'confirmed' | 'at_risk';
+
+interface UiVault {
+  id: string;
+  rune: string;
+  createdAtMs: number;
+  collateralSats: number;
+  lockedCollateralBtc: number;
+  protocolPublicKey: string;
+  ordinalsAddress: string;
+  paymentAddress: string;
+  vaultAddress: string;
+  feeRate: number;
+  confirmations: number;
+  minConfirmations: number;
+  withdrawable: boolean;
+  health: VaultHealth;
+  lastPriceUsd?: number;
+  collateralRatioPercent?: number;
+  mintTokens?: number;
+  mintUsd?: number;
+  mintTxId?: string;
+  withdrawTxId?: string;
 }
 
 interface WithdrawInputRef {
@@ -82,6 +118,14 @@ interface WithdrawFinalizeOk {
   hex: string;
 }
 
+interface CollateralPreview {
+  price: number;
+  sats: bigint;
+  ratio_bps: number;
+  usd_cents: number;
+  using_fallback_price: boolean;
+}
+
 const DEFAULT_ORDINALS_ADDRESS =
   'tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6';
 const DEFAULT_ORDINALS_PUBKEY =
@@ -92,12 +136,86 @@ const DEFAULT_PAYMENT_PUBKEY =
 const DEFAULT_FEE_RECIPIENT = 'tb1pkde3l5fzut4n5h9m2jqfzwtn7q3j0eywl98h0rvg5swlvpra5wnqul27y2';
 const BACKEND_API_KEY = import.meta.env.VITE_BACKEND_API_KEY ?? '';
 const MEMPOOL_BASE_URL = 'https://mempool.space/testnet4/tx/';
+const SATS_PER_BTC = 100_000_000;
+const DEFAULT_FEE_SATS = Number(import.meta.env.VITE_DEFAULT_FEE_SATS ?? 1000);
+const LIQUIDATION_RATIO_BPS = 11200;
+const DEFAULT_CONFIRMATION_TARGET = Number(
+  import.meta.env.VITE_VAULT_MIN_CONFIRMATIONS ?? 6
+);
+const FIXED_MINT_TOKENS = 10;
+const TARGET_COLLATERAL_RATIO = 130;
+const RUNE_SYMBOL = 'USDBZ';
+
+const formatNumber = (
+  value?: number | null,
+  options: Intl.NumberFormatOptions = {}
+): string => {
+  if (value == null || Number.isNaN(value)) return '--';
+  return value.toLocaleString(undefined, options);
+};
+
+const formatBtc = (value?: number | null, digits = 8) =>
+  formatNumber(value, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+
+const formatUsd = (value?: number | null, digits = 0) =>
+  formatNumber(value, {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits
+  });
 
 function truncate(addr?: string, size = 4) {
   if (!addr) return '';
   if (addr.length <= size * 2 + 1) return addr;
   return `${addr.slice(0, size)}…${addr.slice(-size)}`;
 }
+
+const unwrapOpt = <T,>(value: CandidOpt<T> | undefined): T | undefined =>
+  value && value.length ? value[0] : undefined;
+
+const toVaultHealth = (value?: string): VaultHealth => {
+  if (value === 'at_risk') return 'at_risk';
+  if (value === 'confirmed') return 'confirmed';
+  return 'pending';
+};
+
+const mapVaultSummary = (vault: VaultSummary): UiVault => {
+  const mintTokens = unwrapOpt(vault.mint_tokens);
+  const mintUsdCents = unwrapOpt(vault.mint_usd_cents);
+  const mintUsd = mintUsdCents != null ? Number(mintUsdCents) / 100 : undefined;
+  const ratioBps = unwrapOpt(vault.collateral_ratio_bps);
+  const collateralRatioPercent = ratioBps != null ? ratioBps / 100 : undefined;
+  const lastPriceUsd = unwrapOpt(vault.last_btc_price_usd);
+  const lockedCollateral =
+    Number.isFinite(vault.locked_collateral_btc) && vault.locked_collateral_btc > 0
+      ? vault.locked_collateral_btc
+      : Number(vault.collateral_sats ?? 0n) / SATS_PER_BTC;
+  const healthSource =
+    unwrapOpt(vault.health) ?? (vault.withdrawable ? 'confirmed' : 'pending');
+  return {
+    id: vault.vault_id,
+    rune: vault.rune,
+    createdAtMs: Number(vault.created_at ?? 0n),
+    collateralSats: Number(vault.collateral_sats ?? 0n),
+    lockedCollateralBtc: lockedCollateral,
+    protocolPublicKey: vault.protocol_public_key,
+    ordinalsAddress: vault.ordinals_address,
+    paymentAddress: vault.payment_address,
+    vaultAddress: vault.vault_address,
+    feeRate: vault.fee_rate,
+    confirmations: vault.confirmations ?? 0,
+    minConfirmations: vault.min_confirmations ?? 0,
+    withdrawable: Boolean(vault.withdrawable),
+    health: toVaultHealth(healthSource),
+    lastPriceUsd,
+    collateralRatioPercent,
+    mintTokens: mintTokens ?? undefined,
+    mintUsd,
+    mintTxId: unwrapOpt(vault.txid) ?? undefined,
+    withdrawTxId: unwrapOpt(vault.withdraw_txid) ?? undefined
+  };
+};
 
 export default function App() {
   const [actor, setActor] = useState<StablecoinActor | null>(null);
@@ -109,12 +227,14 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [vaultMeta, setVaultMeta] = useState<VaultMeta | null>(null);
+  const [preview, setPreview] = useState<CollateralPreview | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
 
   const [ordinalsAddress, setOrdinalsAddress] = useState(DEFAULT_ORDINALS_ADDRESS);
   const [ordinalsPubKey, setOrdinalsPubKey] = useState(DEFAULT_ORDINALS_PUBKEY);
   const [paymentAddress, setPaymentAddress] = useState(DEFAULT_PAYMENT_ADDRESS);
   const [paymentPubKey, setPaymentPubKey] = useState(DEFAULT_PAYMENT_PUBKEY);
-  const [vaults, setVaults] = useState<VaultSummary[]>([]);
+  const [vaults, setVaults] = useState<UiVault[]>([]);
   const [isVaultsLoading, setIsVaultsLoading] = useState(false);
   const [infoMessage, setInfoMessage] = useState<string>();
   const [activeTab, setActiveTab] = useState<'mint' | 'withdraw'>('mint');
@@ -126,6 +246,7 @@ export default function App() {
   const [isWithdrawLoading, setIsWithdrawLoading] = useState(false);
   const [withdrawInfo, setWithdrawInfo] = useState<string>();
   const [withdrawError, setWithdrawError] = useState<string>();
+  const [showWithdrawnVaults, setShowWithdrawnVaults] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -142,6 +263,28 @@ export default function App() {
       }
     })();
   }, []);
+
+  const refreshPreview = useCallback(async () => {
+    if (!actor) return;
+    setIsPreviewLoading(true);
+    try {
+      const response = await actor.get_collateral_preview();
+      if ('Ok' in response) {
+        setPreview(response.Ok);
+      } else {
+        console.warn('[frontend] collateral preview error', response.Err);
+      }
+    } catch (e) {
+      console.error('[frontend] failed to fetch collateral preview', e);
+    } finally {
+      setIsPreviewLoading(false);
+    }
+  }, [actor]);
+
+  useEffect(() => {
+    if (!actor) return;
+    refreshPreview();
+  }, [actor, refreshPreview]);
 
   const buildPsbt = useCallback(async () => {
     if (!actor) {
@@ -193,24 +336,8 @@ export default function App() {
     setPsbtBase64(psbt);
     setMintInputCount(result.inputs.length);
     console.info('[frontend] received psbt', result);
-    return psbt;
+    return { psbt, inputCount: result.inputs.length };
   }, [actor, ordinalsAddress, ordinalsPubKey, paymentAddress, paymentPubKey]);
-
-  const handleBuildPsbt = useCallback(async () => {
-    setIsLoading(true);
-    setError(undefined);
-    setMintInputCount(0);
-    setVaultMeta(null);
-    setPsbtBase64(undefined);
-    try {
-      await buildPsbt();
-    } catch (e) {
-      console.error('[frontend] build psbt failed', e);
-      setError((e as Error).message);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [buildPsbt]);
 
   const handleConnectXverse = useCallback(async () => {
     setError(undefined);
@@ -258,30 +385,52 @@ export default function App() {
     [xverseConnection]
   );
 
-  const loadVaults = useCallback(async (address: string) => {
-    if (!actor) return;
-    setIsVaultsLoading(true);
-    try {
-      const response = await actor.list_user_vaults(address);
-      if ('Ok' in response) {
-        setVaults(response.Ok);
-      } else {
-        console.warn('[frontend] list_user_vaults error', response.Err);
+  const loadVaults = useCallback(
+    async (address: string) => {
+      if (!actor) {
+        setVaults([]);
+        return;
       }
-    } catch (e) {
-      console.error('[frontend] list_user_vaults failed', e);
-    } finally {
-      setIsVaultsLoading(false);
-    }
-  }, [actor]);
+      const trimmed = address.trim();
+      if (!trimmed) {
+        setVaults([]);
+        return;
+      }
+      setIsVaultsLoading(true);
+      try {
+        const response = await actor.list_user_vaults(trimmed);
+        if ('Ok' in response) {
+          const mapped = response.Ok.map((entry) => mapVaultSummary(entry));
+          setVaults(mapped);
+        } else {
+          console.warn('[frontend] list_user_vaults error', response.Err);
+        }
+      } catch (e) {
+        console.error('[frontend] list_user_vaults failed', e);
+      } finally {
+        setIsVaultsLoading(false);
+      }
+    },
+    [actor]
+  );
+
+  const watchAddress = useMemo(
+    () => paymentAccount?.address ?? paymentAddress,
+    [paymentAccount?.address, paymentAddress]
+  );
 
   useEffect(() => {
-    if (!actor || !paymentAccount) {
+    if (!actor) {
       setVaults([]);
       return;
     }
-    loadVaults(paymentAccount.address);
-  }, [actor, paymentAccount, loadVaults]);
+    const target = watchAddress?.trim();
+    if (!target) {
+      setVaults([]);
+      return;
+    }
+    loadVaults(target);
+  }, [actor, watchAddress, loadVaults]);
 
   useEffect(() => {
     setPendingWithdraw(null);
@@ -289,10 +438,115 @@ export default function App() {
     setWithdrawError(undefined);
   }, [paymentAccount?.address]);
 
-  const canSign = useMemo(
-    () => Boolean(psbtBase64 && paymentAccount && mintInputCount > 0),
-    [psbtBase64, paymentAccount, mintInputCount]
+  const collateralBtc = useMemo(
+    () => (preview ? Number(preview.sats) / SATS_PER_BTC : null),
+    [preview]
   );
+  const collateralRatio = useMemo(
+    () => (preview ? preview.ratio_bps / 100 : null),
+    [preview]
+  );
+  const mintFeeBtc = DEFAULT_FEE_SATS / SATS_PER_BTC;
+  const liquidationPrice = useMemo(() => {
+    if (!preview || preview.ratio_bps === 0) return null;
+    return preview.price * (LIQUIDATION_RATIO_BPS / preview.ratio_bps);
+  }, [preview]);
+  const minBalanceBtc = collateralBtc != null ? collateralBtc + mintFeeBtc : null;
+  const tokensDisplay = formatNumber(FIXED_MINT_TOKENS, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  });
+  const ratioDisplay = collateralRatio != null
+    ? `${formatNumber(collateralRatio, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}%`
+    : '--';
+  const usingFallbackPrice = preview?.using_fallback_price ?? false;
+  const priceDisplay = formatUsd(preview?.price);
+  const liquidationDisplay = formatUsd(liquidationPrice);
+  const feeDisplay = `${formatBtc(mintFeeBtc)} BTC`;
+  const minBalanceDisplay = minBalanceBtc != null ? `${formatBtc(minBalanceBtc)} BTC` : '--';
+  const mintedButtonLabel = `Mint ${tokensDisplay} ${RUNE_SYMBOL}`;
+  const collateralDisplayValue = formatBtc(collateralBtc);
+  const priceDotClass = usingFallbackPrice ? 'status-dot fallback' : 'status-dot online';
+  const mintPanelSubtitle = usingFallbackPrice
+    ? 'BTC price unavailable. Showing fallback collateral values.'
+    : 'Live collateral and fee requirements.';
+  const backendHost = useMemo(() => {
+    if (!backendUrl) return 'not set';
+    try {
+      return new URL(backendUrl).host;
+    } catch {
+      return backendUrl;
+    }
+  }, [backendUrl]);
+
+  const sortedVaults = useMemo(
+    () => [...vaults].sort((a, b) => a.createdAtMs - b.createdAtMs),
+    [vaults]
+  );
+  const visibleVaults = useMemo(
+    () => sortedVaults.filter((vault) => showWithdrawnVaults || !vault.withdrawTxId),
+    [sortedVaults, showWithdrawnVaults]
+  );
+  const hiddenWithdrawnCount = useMemo(
+    () => sortedVaults.filter((vault) => vault.withdrawTxId).length,
+    [sortedVaults]
+  );
+  const deriveRatio = useCallback(
+    (vault: UiVault): number | undefined => {
+      const price = vault.lastPriceUsd ?? preview?.price;
+      if (!price || FIXED_MINT_TOKENS <= 0) {
+        return undefined;
+      }
+      return (vault.lockedCollateralBtc * price) / FIXED_MINT_TOKENS * 100;
+    },
+    [preview?.price]
+  );
+  const totalLockedBtc = useMemo(() => {
+    return visibleVaults.reduce((sum, vault) => sum + (vault.lockedCollateralBtc ?? 0), 0);
+  }, [visibleVaults]);
+  const avgCollateralRatio = useMemo(() => {
+    const ratios = visibleVaults
+      .map((vault) => deriveRatio(vault))
+      .filter((value): value is number => value != null);
+    if (!ratios.length) return null;
+    const total = ratios.reduce((sum, value) => sum + value, 0);
+    return total / ratios.length;
+  }, [visibleVaults, deriveRatio]);
+  const latestVaultPrice = useMemo(() => {
+    for (const vault of visibleVaults) {
+      if (vault.lastPriceUsd != null) {
+        return vault.lastPriceUsd;
+      }
+    }
+    return preview?.price;
+  }, [visibleVaults, preview?.price]);
+  const atRiskCount = useMemo(
+    () => visibleVaults.filter((vault) => vault.health === 'at_risk').length,
+    [visibleVaults]
+  );
+  const withdrawReadyCount = useMemo(
+    () => visibleVaults.filter((vault) => vault.withdrawable).length,
+    [visibleVaults]
+  );
+  const confirmationRequirement = useMemo(() => {
+    if (!visibleVaults.length) {
+      return DEFAULT_CONFIRMATION_TARGET;
+    }
+    return visibleVaults.reduce(
+      (max, vault) => Math.max(max, vault.minConfirmations ?? DEFAULT_CONFIRMATION_TARGET),
+      0
+    );
+  }, [visibleVaults]);
+  const totalLockedDisplay = formatBtc(totalLockedBtc);
+  const avgCollateralDisplay =
+    avgCollateralRatio != null
+      ? `${formatNumber(avgCollateralRatio, {
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 0
+        })}%`
+      : '--';
+  const latestPriceDisplay =
+    latestVaultPrice != null ? formatUsd(latestVaultPrice, 0) : '--';
 
   const finalizeSignedPsbt = useCallback(async (signedPsbt: string) => {
     if (!backendUrl) {
@@ -300,6 +554,9 @@ export default function App() {
     }
     if (!vaultMeta) {
       throw new Error('Missing vault metadata. Build another PSBT and try again.');
+    }
+    if (!preview) {
+      throw new Error('Collateral preview unavailable. Refresh the page and try again.');
     }
     const base = backendUrl.trim().replace(/\/$/, '');
     const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -316,6 +573,9 @@ export default function App() {
       feeRate: vaultMeta.feeRate,
       ordinalsAddress: vaultMeta.ordinalsAddress,
       paymentAddress: vaultMeta.paymentAddress,
+      mintTokens: FIXED_MINT_TOKENS,
+      mintUsdCents: FIXED_MINT_TOKENS * 100,
+      btcPriceUsd: preview.price,
     };
 
     const response = await fetch(`${base}/mint/finalize`, {
@@ -337,10 +597,12 @@ export default function App() {
     if (paymentAccount) {
       await loadVaults(paymentAccount.address);
     }
-  }, [backendUrl, paymentAddress, vaultMeta, paymentAccount, loadVaults]);
+  }, [backendUrl, paymentAddress, vaultMeta, paymentAccount, loadVaults, preview]);
 
-  const handleSign = useCallback(async () => {
-    if (!psbtBase64) {
+  const handleSign = useCallback(async (psbtOverride?: string, inputOverride?: number) => {
+    const psbtToSign = psbtOverride ?? psbtBase64;
+    const inputsToSign = inputOverride ?? mintInputCount;
+    if (!psbtToSign) {
       setError('Build a PSBT first.');
       return;
     }
@@ -350,13 +612,13 @@ export default function App() {
     }
     setError(undefined);
     try {
-      const signed = await signPsbtWithXverse(psbtBase64, {
+      const signed = await signPsbtWithXverse(psbtToSign, {
         signInputs: {
-      [paymentAccount.address]: Array.from({ length: mintInputCount }, (_, i) => i)
-    },
-    autoFinalize: false,
-    broadcast: false
-  });
+          [paymentAccount.address]: Array.from({ length: inputsToSign }, (_, i) => i)
+        },
+        autoFinalize: false,
+        broadcast: false
+      });
       await finalizeSignedPsbt(signed);
     } catch (e) {
       console.error('[frontend] signing failed', e);
@@ -364,30 +626,116 @@ export default function App() {
     }
   }, [psbtBase64, paymentAccount, mintInputCount, finalizeSignedPsbt]);
 
-  const handleWithdrawClick = useCallback(async (vault: VaultSummary) => {
+  const handleMintAndSign = useCallback(async () => {
+    if (!paymentAccount) {
+      setError('Connect Xverse first.');
+      return;
+    }
+    setIsLoading(true);
+    setError(undefined);
+    setMintInputCount(0);
+    setVaultMeta(null);
+    setPsbtBase64(undefined);
+    try {
+      const built = await buildPsbt();
+      setMintInputCount(built.inputCount);
+      setPsbtBase64(built.psbt);
+      await handleSign(built.psbt, built.inputCount);
+    } catch (e) {
+      console.error('[frontend] mint flow failed', e);
+      setError((e as Error).message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [paymentAccount, buildPsbt, handleSign]);
+
+  const handleSignWithdraw = useCallback(
+    async (jobOverride?: { vaultId: string; psbt: string; inputCount: number }) => {
+      if (!actor) {
+        setWithdrawError('Prepare a withdraw PSBT first.');
+        return;
+      }
+      const job = jobOverride ?? pendingWithdraw;
+      if (!job) {
+        setWithdrawError('Prepare a withdraw PSBT first.');
+        return;
+      }
+      if (!paymentAccount || !ordinalsAccount) {
+        setWithdrawError('Connect Xverse first to sign.');
+        return;
+      }
+      setWithdrawError(undefined);
+      setWithdrawInfo(undefined);
+      setIsWithdrawLoading(true);
+      try {
+        const signInputs: Record<string, number[]> = {};
+        signInputs[ordinalsAccount.address] = [0];
+        const paymentIndex = job.inputCount > 1 ? 1 : 0;
+        signInputs[paymentAccount.address] = [paymentIndex];
+
+        const signed = await signPsbtWithXverse(job.psbt, {
+          signInputs,
+          autoFinalize: false,
+          broadcast: false
+        });
+
+        const finalized = await actor.finalize_withdraw({
+          vault_id: job.vaultId,
+          signed_psbt: signed,
+          broadcast: [true],
+        });
+        if ('Ok' in finalized) {
+          const txid = finalized.Ok.txid?.[0];
+          setWithdrawInfo(txid ? `Withdraw broadcast: ${txid}` : 'Withdraw finalized.');
+          setPendingWithdraw(null);
+          if (paymentAccount) {
+            await loadVaults(paymentAccount.address);
+          }
+        } else {
+          setWithdrawError(finalized.Err);
+        }
+      } catch (e) {
+        setWithdrawError((e as Error).message);
+      } finally {
+        setIsWithdrawLoading(false);
+      }
+    },
+    [actor, pendingWithdraw, ordinalsAccount, paymentAccount, loadVaults]
+  );
+
+  const handleWithdrawClick = useCallback(async (vault: UiVault) => {
     if (!actor) return;
     if (!paymentAccount || !ordinalsAccount) {
       setWithdrawError('Connect Xverse first to withdraw.');
       return;
     }
-    if (!vault.txid || vault.txid.length === 0) {
+    if (!vault.mintTxId) {
       setWithdrawError('Vault transaction not yet broadcasted.');
+      return;
+    }
+    if (!vault.withdrawable) {
+      const remaining = Math.max(vault.minConfirmations - vault.confirmations, 0);
+      setWithdrawError(
+        `Vault ${vault.id} needs ${remaining} more confirmation${remaining === 1 ? '' : 's'} before withdrawing.`
+      );
       return;
     }
     setWithdrawError(undefined);
     setWithdrawInfo(undefined);
     setIsWithdrawLoading(true);
     try {
-      const response = await actor.prepare_withdraw(vault.vault_id);
+      const response = await actor.prepare_withdraw(vault.id);
       if ('Ok' in response) {
         const result = response.Ok as WithdrawPrepareOk;
-        setPendingWithdraw({
+        const job = {
           vaultId: result.vault_id,
           psbt: result.psbt,
-          inputCount: result.inputs.length,
-        });
-        setWithdrawInfo('Withdraw PSBT ready. Sign with Xverse to complete.');
+          inputCount: result.inputs.length
+        };
+        setPendingWithdraw(job);
+        setWithdrawInfo('Withdraw PSBT ready. Signing with Xverse…');
         setActiveTab('withdraw');
+        await handleSignWithdraw(job);
       } else {
         setWithdrawError(response.Err);
       }
@@ -396,53 +744,7 @@ export default function App() {
     } finally {
       setIsWithdrawLoading(false);
     }
-  }, [actor, ordinalsAccount, paymentAccount]);
-
-  const handleSignWithdraw = useCallback(async () => {
-    if (!actor || !pendingWithdraw) {
-      setWithdrawError('Prepare a withdraw PSBT first.');
-      return;
-    }
-    if (!paymentAccount || !ordinalsAccount) {
-      setWithdrawError('Connect Xverse first to sign.');
-      return;
-    }
-    setWithdrawError(undefined);
-    setWithdrawInfo(undefined);
-    setIsWithdrawLoading(true);
-    try {
-      const signInputs: Record<string, number[]> = {};
-      signInputs[ordinalsAccount.address] = [0];
-      const paymentIndex = pendingWithdraw.inputCount > 1 ? 1 : 0;
-      signInputs[paymentAccount.address] = [paymentIndex];
-
-      const signed = await signPsbtWithXverse(pendingWithdraw.psbt, {
-        signInputs,
-        autoFinalize: false,
-        broadcast: false
-      });
-
-      const finalized = await actor.finalize_withdraw({
-        vault_id: pendingWithdraw.vaultId,
-        signed_psbt: signed,
-        broadcast: [true],
-      });
-      if ('Ok' in finalized) {
-        const txid = finalized.Ok.txid?.[0];
-        setWithdrawInfo(txid ? `Withdraw broadcast: ${txid}` : 'Withdraw finalized.');
-        setPendingWithdraw(null);
-        if (paymentAccount) {
-          await loadVaults(paymentAccount.address);
-        }
-      } else {
-        setWithdrawError(finalized.Err);
-      }
-    } catch (e) {
-      setWithdrawError((e as Error).message);
-    } finally {
-      setIsWithdrawLoading(false);
-    }
-  }, [actor, pendingWithdraw, ordinalsAccount, paymentAccount, loadVaults]);
+  }, [actor, ordinalsAccount, paymentAccount, handleSignWithdraw]);
 
   return (
     <div className="container">
@@ -454,7 +756,7 @@ export default function App() {
         <div className="statbar">
           <span className="pill">ICP • Bitcoin Integration</span>
           <span>Backend</span>
-          <span className="muted">{backendUrl ? new URL(backendUrl).host : 'not set'}</span>
+          <span className="muted">{backendHost}</span>
           <span className={health === 'ok' ? 'ok' : 'error'} style={{ padding: '4px 8px' }}>{health ?? 'loading'}</span>
         </div>
         <div className="wallet">
@@ -489,7 +791,78 @@ export default function App() {
           </div>
           {activeTab === 'mint' && (
           <div className="card-body">
-            <div className="section-title">Mint Inputs</div>
+            <div className="mint-panel">
+              <div className="mint-panel-header">
+                <div>
+                  <div className="section-title" style={{ marginBottom: 4 }}>Mint Overview</div>
+                  <div className="mint-panel-subtitle">{mintPanelSubtitle}</div>
+                </div>
+                <button
+                  className="btn-icon"
+                  onClick={refreshPreview}
+                  disabled={!actor || isPreviewLoading}
+                  title="Refresh preview"
+                >
+                  {isPreviewLoading ? '…' : '↺'}
+                </button>
+              </div>
+              <div className="stat-cards">
+                <div className="stat-card">
+                  <div className="stat-label">Collateral Required</div>
+                  <div className="stat-value">{collateralDisplayValue}</div>
+                  <div className="stat-unit">BTC</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">Tokens received per mint</div>
+                  <div className="stat-value">{tokensDisplay}</div>
+                  <div className="stat-unit">{RUNE_SYMBOL}</div>
+                </div>
+              </div>
+              <div className="info-grid">
+                <div className="info-row">
+                  <span className="info-row-label">BTC Price</span>
+                  <span className="info-row-value">
+                    {priceDisplay}
+                    <span className={priceDotClass} />
+                  </span>
+                </div>
+                <div className="info-row">
+                  <span className="info-row-label">Collateral Ratio</span>
+                  <span className="info-row-value">{ratioDisplay}</span>
+                </div>
+                <div className="info-row">
+                  <span className="info-row-label">Fee required to mint</span>
+                  <span className="info-row-value">{feeDisplay}</span>
+                </div>
+                <div className="info-row">
+                  <span className="info-row-label">Liquidation Price</span>
+                  <span className="info-row-value">{liquidationDisplay}</span>
+                </div>
+              </div>
+              <div className="alert-min">
+                <span className="dot" />
+                Min Balance required is {minBalanceDisplay}
+              </div>
+              <div className="mint-actions">
+              <button
+                className="btn btn-primary"
+                disabled={isLoading || !paymentAccount}
+                onClick={handleMintAndSign}
+              >
+                {isLoading ? 'Processing…' : mintedButtonLabel}
+              </button>
+              <a
+                className="link-secondary"
+                href="#"
+                onClick={(e) => e.preventDefault()}
+              >
+                  Switch to Auction
+                </a>
+              </div>
+            </div>
+
+            <div className="divider" />
+            <div className="section-title">Wallet Inputs</div>
             <div className="muted" style={{ marginBottom: 12 }}>Paste from Xverse or use your own keys.</div>
             <div className="field">
               <label className="label">Ordinals address</label>
@@ -508,15 +881,6 @@ export default function App() {
                 <label className="label">Payment public key</label>
                 <input className="input mono" value={paymentPubKey} onChange={(e) => setPaymentPubKey(e.target.value)} />
               </div>
-            </div>
-
-            <div className="row" style={{ marginTop: 8 }}>
-              <button className="btn btn-primary" disabled={isLoading} onClick={handleBuildPsbt}>
-                {isLoading ? 'Building…' : 'Build PSBT'}
-              </button>
-              <button className="btn btn-outline" disabled={!canSign} onClick={handleSign}>
-                Sign with Xverse
-              </button>
             </div>
 
             {psbtBase64 && (
@@ -547,123 +911,236 @@ export default function App() {
           )}
 
           {activeTab === 'withdraw' && (
-          <div className="card-body">
-            <div className="section-title">Your Vaults</div>
-            <div className="muted" style={{ marginBottom: 12 }}>
-              Broadcasted vaults appear here with mint and withdraw tx links.
-            </div>
-            {isVaultsLoading && <div className="muted">Loading vaults…</div>}
-            {!isVaultsLoading && vaults.length === 0 && (
-              <div className="muted">No vaults yet. Mint to create your first one.</div>
-            )}
-            {!isVaultsLoading && vaults.length > 0 && (
-              <div className="vault-list">
-                {vaults.map((vault) => {
-                  const txid = vault.txid?.[0];
-                  const withdrawTx = vault.withdraw_txid?.[0];
-                  const isPendingSelection =
-                    pendingWithdraw && pendingWithdraw.vaultId === vault.vault_id;
-                  const withdrawDisabled =
-                    Boolean(withdrawTx) ||
-                    isWithdrawLoading ||
-                    (pendingWithdraw !== null && !isPendingSelection);
-                  return (
-                    <div key={`${vault.vault_id}-${vault.created_at}`} className="vault-card">
-                      <div className="vault-card-header">
-                        <strong>Vault #{vault.vault_id}</strong>
-                        <span>{(Number(vault.collateral_sats) / 1e8).toFixed(8)} BTC</span>
-                      </div>
-                      <div className="muted" style={{ marginBottom: 4 }}>
-                        Created {new Date(Number(vault.created_at)).toLocaleString()}
-                      </div>
-                      <div className="muted">Vault address: {truncate(vault.vault_address, 8)}</div>
-                      <div className="muted">Protocol key: {truncate(vault.protocol_public_key, 8)}</div>
-                      <div className="muted">Rune: {vault.rune}</div>
-                      <div className="muted">
-                        Mint TX:{' '}
-                        {txid ? (
-                          <a href={`${MEMPOOL_BASE_URL}${txid}`} target="_blank" rel="noreferrer">
-                            {truncate(txid, 10)}
-                          </a>
-                        ) : (
-                          'pending broadcast'
-                        )}
-                      </div>
-                      <div className="muted">
-                        Withdraw TX:{' '}
-                        {withdrawTx ? (
-                          <a
-                            href={`${MEMPOOL_BASE_URL}${withdrawTx}`}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            {truncate(withdrawTx, 10)}
-                          </a>
-                        ) : (
-                          'not started'
-                        )}
-                      </div>
-                      <button
-                        className="btn btn-outline"
-                        style={{ marginTop: 8 }}
-                        onClick={() => handleWithdrawClick(vault)}
-                        disabled={withdrawDisabled}
-                      >
-                        {withdrawTx
-                          ? 'Withdrawn'
-                          : isPendingSelection
-                            ? 'Awaiting signature'
-                            : 'Withdraw'}
-                      </button>
+            <div className="card-body">
+              <div className="withdraw-panel">
+                <div className="withdraw-headline">
+                  <div>
+                    <div className="section-title" style={{ marginBottom: 4 }}>Vault Health</div>
+                    <div className="muted">
+                      Monitor collateral, confirmations, and health before unbinding BTC.
                     </div>
-                  );
-                })}
+                  </div>
+                  <div className="pill neon">
+                    Requires {confirmationRequirement || DEFAULT_CONFIRMATION_TARGET}+ confirmations
+                  </div>
+                  {hiddenWithdrawnCount > 0 && (
+                    <button
+                      className="btn-pill"
+                      onClick={() => setShowWithdrawnVaults((prev) => !prev)}
+                    >
+                      {showWithdrawnVaults
+                        ? 'Hide older vaults'
+                        : `Show older vaults (${hiddenWithdrawnCount})`}
+                    </button>
+                  )}
+                </div>
+                <div className="vault-stat-grid">
+                  <div className="stat-card compact">
+                    <div className="stat-label">Total locked</div>
+                    <div className="stat-value">{totalLockedDisplay}</div>
+                    <div className="stat-unit">BTC</div>
+                  </div>
+                  <div className="stat-card compact">
+                    <div className="stat-label">Avg collateral ratio</div>
+                    <div className="stat-value">{avgCollateralDisplay}</div>
+                    <div className="stat-unit">target ≥ {TARGET_COLLATERAL_RATIO}%</div>
+                  </div>
+                  <div className="stat-card compact">
+                    <div className="stat-label">Vaults ready</div>
+                    <div className="stat-value">{withdrawReadyCount}</div>
+                    <div className="stat-unit">of {visibleVaults.length}</div>
+                  </div>
+                  <div className="stat-card compact">
+                    <div className="stat-label">Live BTC price</div>
+                    <div className="stat-value">{latestPriceDisplay}</div>
+                    <div className="stat-unit">
+                      {atRiskCount > 0 ? `${atRiskCount} at risk` : 'all healthy'}
+                    </div>
+                  </div>
+                </div>
               </div>
-            )}
-            {pendingWithdraw && (
-              <div className="vault-card" style={{ marginTop: 16 }}>
-                <div className="vault-card-header">
-                  <strong>Pending withdraw</strong>
-                  <span>Vault #{pendingWithdraw.vaultId}</span>
+              {isVaultsLoading && <div className="muted">Loading vaults…</div>}
+              {!isVaultsLoading && visibleVaults.length === 0 && (
+                <div className="muted">
+                  {hiddenWithdrawnCount > 0
+                    ? 'All active vaults are already withdrawn. Show older vaults to review history.'
+                    : 'No vaults yet. Mint to create your first one.'}
                 </div>
-                <div className="muted" style={{ marginBottom: 8 }}>
-                  PSBT prepared. Sign with Xverse to finalize.
+              )}
+              {!isVaultsLoading && visibleVaults.length > 0 && (
+                <div className="vault-grid">
+                  {visibleVaults.map((vault, index) => {
+                    const mintedTokensLabel = `${FIXED_MINT_TOKENS} ${RUNE_SYMBOL}`;
+                    const mintedUsdLabel = formatUsd(FIXED_MINT_TOKENS, 0);
+                    const collateralDisplayVault = formatBtc(vault.lockedCollateralBtc);
+                    const priceForVault = vault.lastPriceUsd ?? preview?.price;
+                    const collateralUsdDisplay =
+                      priceForVault != null
+                        ? formatUsd(vault.lockedCollateralBtc * priceForVault, 0)
+                        : '--';
+                    const statusClass = `status-pill ${vault.health}`;
+                    const statusLabel =
+                      vault.health === 'at_risk'
+                        ? 'At Risk'
+                        : vault.health === 'confirmed'
+                          ? 'Confirmed'
+                          : 'Pending';
+                    const confirmationsLabel = `${vault.confirmations}/${vault.minConfirmations}`;
+                    const derivedRatio = deriveRatio(vault);
+                    const ratioDisplayVault =
+                      derivedRatio != null
+                        ? `${formatNumber(derivedRatio, {
+                            minimumFractionDigits: 0,
+                            maximumFractionDigits: 0
+                          })}%`
+                        : '--';
+                    const remainingConf = Math.max(
+                      vault.minConfirmations - vault.confirmations,
+                      0
+                    );
+                    const confirmationPct =
+                      vault.minConfirmations > 0
+                        ? Math.min(vault.confirmations / vault.minConfirmations, 1)
+                        : 0;
+                    const isPendingSelection =
+                      pendingWithdraw && pendingWithdraw.vaultId === vault.id;
+                    const withdrawDisabled =
+                      Boolean(vault.withdrawTxId) ||
+                      isWithdrawLoading ||
+                      (pendingWithdraw !== null && !isPendingSelection) ||
+                      !vault.withdrawable;
+                    const mintedTimestamp = new Date(vault.createdAtMs).toLocaleString();
+                    return (
+                      <div key={`${vault.id}-${vault.createdAtMs}`} className="vault-card">
+                        <div className="vault-card-header">
+                          <div>
+                            <div className="vault-title">USDBZ Vault • {index + 1}</div>
+                            <div className="vault-subtitle">{mintedTimestamp}</div>
+                          </div>
+                          <div className={statusClass}>{statusLabel}</div>
+                        </div>
+                        <div className="vault-metrics">
+                          <div className="vault-metric">
+                            <div className="vault-metric-label">Minted</div>
+                            <div className="vault-metric-value">
+                              {mintedTokensLabel} {RUNE_SYMBOL}
+                            </div>
+                            <div className="vault-metric-sub">{mintedUsdLabel}</div>
+                          </div>
+                          <div className="vault-metric">
+                            <div className="vault-metric-label">Locked collateral</div>
+                            <div className="vault-metric-value">{collateralDisplayVault}</div>
+                            <div className="vault-metric-sub">{collateralUsdDisplay}</div>
+                          </div>
+                          <div className="vault-metric">
+                            <div className="vault-metric-label">Collateral ratio</div>
+                            <div className="vault-metric-value">{ratioDisplayVault}</div>
+                            <div className="vault-metric-sub">Target ≥ {TARGET_COLLATERAL_RATIO}%</div>
+                          </div>
+                          <div className="vault-metric">
+                            <div className="vault-metric-label">Confirmations</div>
+                            <div className="vault-metric-value">{confirmationsLabel}</div>
+                            <div className="vault-metric-sub">
+                              {vault.withdrawable
+                                ? 'Ready to withdraw'
+                                : `${remainingConf} block${
+                                    remainingConf === 1 ? '' : 's'
+                                  } remaining`}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="confirmation-bar">
+                          <div
+                            className="confirmation-bar-progress"
+                            style={{ width: `${confirmationPct * 100}%` }}
+                          />
+                        </div>
+                        <div className="vault-links">
+                          <div className="vault-tx-row">
+                            <span className="label">Mint TX</span>
+                            {vault.mintTxId ? (
+                              <a
+                                href={`${MEMPOOL_BASE_URL}${vault.mintTxId}`}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {truncate(vault.mintTxId, 10)}
+                              </a>
+                            ) : (
+                              <span className="muted">pending broadcast</span>
+                            )}
+                          </div>
+                          <div className="vault-tx-row">
+                            <span className="label">Withdraw TX</span>
+                            {vault.withdrawTxId ? (
+                              <a
+                                href={`${MEMPOOL_BASE_URL}${vault.withdrawTxId}`}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {truncate(vault.withdrawTxId, 10)}
+                              </a>
+                            ) : (
+                              <span className="muted">not started</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="vault-actions">
+                          <button
+                            className="btn btn-primary"
+                            onClick={() => handleWithdrawClick(vault)}
+                            disabled={withdrawDisabled}
+                          >
+                            {vault.withdrawTxId
+                              ? 'Withdrawn'
+                              : isPendingSelection
+                                ? 'Awaiting signature'
+                                : vault.withdrawable
+                                  ? 'Withdraw'
+                                  : 'Waiting confirmations'}
+                          </button>
+                          <div className="vault-meta">
+                            <div>Vault: {truncate(vault.vaultAddress, 8)}</div>
+                            <div>Protocol key: {truncate(vault.protocolPublicKey, 8)}</div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-                <button
-                  className="btn btn-primary"
-                  onClick={handleSignWithdraw}
-                  disabled={isWithdrawLoading}
-                >
-                  {isWithdrawLoading ? 'Finalizing…' : 'Sign & Finalize'}
-                </button>
-                <div style={{ marginTop: 10 }}>
-                  <div className="label" style={{ marginBottom: 6 }}>Withdraw PSBT (base64)</div>
-                  <pre className="codebox mono">{pendingWithdraw.psbt}</pre>
+              )}
+              {pendingWithdraw && (
+                <div className="vault-card" style={{ marginTop: 16 }}>
+                  <div className="vault-card-header">
+                    <strong>Pending withdraw</strong>
+                    <span>Vault #{pendingWithdraw.vaultId}</span>
+                  </div>
+                  <div className="muted" style={{ marginBottom: 8 }}>
+                    PSBT prepared. Sign with Xverse to finalize.
+                  </div>
+                  <button
+                    className="btn btn-primary"
+                    onClick={handleSignWithdraw}
+                    disabled={isWithdrawLoading}
+                  >
+                    {isWithdrawLoading ? 'Finalizing…' : 'Sign & Finalize'}
+                  </button>
+                  <div style={{ marginTop: 10 }}>
+                    <div className="label" style={{ marginBottom: 6 }}>Withdraw PSBT (base64)</div>
+                    <pre className="codebox mono">{pendingWithdraw.psbt}</pre>
+                  </div>
                 </div>
-              </div>
-            )}
-            {withdrawInfo && (
-              <div className="info" style={{ marginTop: 14 }}>{withdrawInfo}</div>
-            )}
-            {withdrawError && (
-              <div className="error" style={{ marginTop: 14 }}>{withdrawError}</div>
-            )}
-          </div>
+              )}
+              {withdrawInfo && (
+                <div className="info" style={{ marginTop: 14 }}>{withdrawInfo}</div>
+              )}
+              {withdrawError && (
+                <div className="error" style={{ marginTop: 14 }}>{withdrawError}</div>
+              )}
+            </div>
           )}
         </section>
 
-        <aside className="card">
-          <div className="card-header">
-            <div className="section-title">Notes</div>
-          </div>
-          <div className="card-body">
-            <ul className="muted" style={{ lineHeight: 1.6 }}>
-              <li>Connect Xverse on Testnet4, then mint a PSBT.</li>
-              <li>We include a deterministic runestone patch for mint transactions.</li>
-              <li>Signing remains in-wallet; we only display the signed PSBT locally.</li>
-            </ul>
-          </div>
-        </aside>
       </div>
     </div>
   );
