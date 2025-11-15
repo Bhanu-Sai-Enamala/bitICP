@@ -9,19 +9,21 @@ export const idlFactory = ({ IDL }) => {
     'vault_sats' : IDL.Opt(IDL.Nat64),
     'fee_recipient_sats' : IDL.Opt(IDL.Nat64),
   });
+  const InputRef = IDL.Record({ 'txid' : IDL.Text, 'vout' : IDL.Nat32 });
   const BuildPsbtRequest = IDL.Record({
     'ordinals' : AddressBinding,
     'fee_recipient' : IDL.Text,
     'rune' : IDL.Text,
     'amounts' : IDL.Opt(AmountOverrides),
     'fee_rate' : IDL.Float64,
+    'inputs_override' : IDL.Opt(IDL.Vec(InputRef)),
     'payment' : AddressBinding,
+    'outputs_override_json' : IDL.Opt(IDL.Text),
   });
   const ChangeOutput = IDL.Record({
     'amount_btc' : IDL.Text,
     'address' : IDL.Text,
   });
-  const InputRef = IDL.Record({ 'txid' : IDL.Text, 'vout' : IDL.Nat32 });
   const MintResult = IDL.Record({
     'change_output' : IDL.Opt(ChangeOutput),
     'raw_transaction_hex' : IDL.Text,
@@ -45,12 +47,14 @@ export const idlFactory = ({ IDL }) => {
     'rune' : IDL.Text,
     'fee_rate' : IDL.Float64,
   });
-  const CollateralPreview = IDL.Record({
-    'price' : IDL.Float64,
-    'sats' : IDL.Nat64,
-    'ratio_bps' : IDL.Nat16,
-    'usd_cents' : IDL.Nat32,
-    'using_fallback_price' : IDL.Bool,
+  const FinalizeMintRequest = IDL.Record({
+    'vault_id' : IDL.Text,
+    'signed_psbt' : IDL.Text,
+  });
+  const FinalizeMintResponse = IDL.Record({
+    'hex' : IDL.Text,
+    'txid' : IDL.Opt(IDL.Text),
+    'vault_id' : IDL.Text,
   });
   const WithdrawFinalizeRequest = IDL.Record({
     'vault_id' : IDL.Text,
@@ -65,27 +69,38 @@ export const idlFactory = ({ IDL }) => {
   const BackendConfig = IDL.Record({
     'base_url' : IDL.Text,
     'api_key' : IDL.Opt(IDL.Text),
+    'rune_op_return_hex' : IDL.Text,
+    'ordinals_sats' : IDL.Nat64,
+    'fee_recipient_address' : IDL.Text,
+    'fee_recipient_sats' : IDL.Nat64,
+  });
+  const CollateralPreview = IDL.Record({
+    'using_fallback_price' : IDL.Bool,
+    'sats' : IDL.Nat64,
+    'ratio_bps' : IDL.Nat16,
+    'usd_cents' : IDL.Nat32,
+    'price' : IDL.Float64,
   });
   const VaultSummary = IDL.Record({
+    'confirmations' : IDL.Nat32,
+    'last_btc_price_usd' : IDL.Opt(IDL.Float64),
+    'mint_usd_cents' : IDL.Opt(IDL.Nat64),
     'withdraw_txid' : IDL.Opt(IDL.Text),
+    'locked_collateral_btc' : IDL.Float64,
     'ordinals_address' : IDL.Text,
     'rune' : IDL.Text,
+    'mint_tokens' : IDL.Opt(IDL.Float64),
     'txid' : IDL.Opt(IDL.Text),
     'protocol_public_key' : IDL.Text,
     'vault_id' : IDL.Text,
     'created_at' : IDL.Nat64,
     'vault_address' : IDL.Text,
     'fee_rate' : IDL.Float64,
-    'collateral_sats' : IDL.Nat64,
-    'locked_collateral_btc' : IDL.Float64,
-    'payment_address' : IDL.Text,
-    'confirmations' : IDL.Nat32,
-    'min_confirmations' : IDL.Nat32,
     'withdrawable' : IDL.Bool,
-    'last_btc_price_usd' : IDL.Opt(IDL.Float64),
+    'min_confirmations' : IDL.Nat32,
+    'collateral_sats' : IDL.Nat64,
+    'payment_address' : IDL.Text,
     'collateral_ratio_bps' : IDL.Opt(IDL.Nat32),
-    'mint_tokens' : IDL.Opt(IDL.Float64),
-    'mint_usd_cents' : IDL.Opt(IDL.Nat64),
     'health' : IDL.Opt(IDL.Text),
   });
   const WithdrawInput = IDL.Record({
@@ -116,23 +131,23 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Variant({ 'Ok' : MintResponse, 'Err' : IDL.Text })],
         [],
       ),
+    'finalize_mint' : IDL.Func(
+        [FinalizeMintRequest],
+        [IDL.Variant({ 'Ok' : FinalizeMintResponse, 'Err' : IDL.Text })],
+        [],
+      ),
     'finalize_withdraw' : IDL.Func(
         [WithdrawFinalizeRequest],
         [IDL.Variant({ 'Ok' : WithdrawFinalizeResponse, 'Err' : IDL.Text })],
         [],
       ),
     'get_backend_config' : IDL.Func([], [BackendConfig], ['query']),
-    'health' : IDL.Func([], [IDL.Text], ['query']),
     'get_collateral_preview' : IDL.Func(
         [],
-        [
-          IDL.Variant({
-            'Ok' : CollateralPreview,
-            'Err' : IDL.Text,
-          })
-        ],
+        [IDL.Variant({ 'Ok' : CollateralPreview, 'Err' : IDL.Text })],
         [],
       ),
+    'health' : IDL.Func([], [IDL.Text], ['query']),
     'list_user_vaults' : IDL.Func(
         [IDL.Text],
         [IDL.Variant({ 'Ok' : IDL.Vec(VaultSummary), 'Err' : IDL.Text })],
@@ -145,6 +160,17 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'set_backend_config' : IDL.Func([IDL.Text, IDL.Opt(IDL.Text)], [], []),
+    'set_fee_config' : IDL.Func(
+        [IDL.Nat64, IDL.Nat64, IDL.Text, IDL.Text],
+        [],
+        [],
+      ),
+    'set_protocol_keys' : IDL.Func([IDL.Text, IDL.Text, IDL.Text], [], []),
+    'set_schnorr_key' : IDL.Func(
+        [IDL.Text],
+        [IDL.Variant({ 'Ok' : IDL.Null, 'Err' : IDL.Text })],
+        [],
+      ),
     'sign_withdraw' : IDL.Func(
         [WithdrawSignRequest],
         [IDL.Variant({ 'Ok' : WithdrawSignResponse, 'Err' : IDL.Text })],

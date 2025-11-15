@@ -118,6 +118,12 @@ interface WithdrawFinalizeOk {
   hex: string;
 }
 
+interface FinalizeMintOk {
+  vault_id: string;
+  txid: [string] | [];
+  hex: string;
+}
+
 interface CollateralPreview {
   price: number;
   sats: bigint;
@@ -134,7 +140,6 @@ const DEFAULT_PAYMENT_ADDRESS = 'tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd';
 const DEFAULT_PAYMENT_PUBKEY =
   '0273c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c';
 const DEFAULT_FEE_RECIPIENT = 'tb1pkde3l5fzut4n5h9m2jqfzwtn7q3j0eywl98h0rvg5swlvpra5wnqul27y2';
-const BACKEND_API_KEY = import.meta.env.VITE_BACKEND_API_KEY ?? '';
 const MEMPOOL_BASE_URL = 'https://mempool.space/testnet4/tx/';
 const SATS_PER_BTC = 100_000_000;
 const DEFAULT_FEE_SATS = Number(import.meta.env.VITE_DEFAULT_FEE_SATS ?? 1000);
@@ -549,55 +554,28 @@ export default function App() {
     latestVaultPrice != null ? formatUsd(latestVaultPrice, 0) : '--';
 
   const finalizeSignedPsbt = useCallback(async (signedPsbt: string) => {
-    if (!backendUrl) {
-      throw new Error('Backend URL not available. Configure the canister backend first.');
+    if (!actor) {
+      throw new Error('Canister actor not ready.');
     }
     if (!vaultMeta) {
       throw new Error('Missing vault metadata. Build another PSBT and try again.');
     }
-    if (!preview) {
-      throw new Error('Collateral preview unavailable. Refresh the page and try again.');
-    }
-    const base = backendUrl.trim().replace(/\/$/, '');
-    const headers: Record<string, string> = { 'content-type': 'application/json' };
-    if (BACKEND_API_KEY) {
-      headers['x-api-key'] = BACKEND_API_KEY;
-    }
-    const vaultPayload = {
-      vaultAddress: vaultMeta.vaultAddress,
-      protocolPublicKey: vaultMeta.protocolPublicKey,
-      protocolChainCode: vaultMeta.protocolChainCode,
-      descriptor: vaultMeta.descriptor,
-      collateralSats: vaultMeta.collateralSats,
-      rune: vaultMeta.rune,
-      feeRate: vaultMeta.feeRate,
-      ordinalsAddress: vaultMeta.ordinalsAddress,
-      paymentAddress: vaultMeta.paymentAddress,
-      mintTokens: FIXED_MINT_TOKENS,
-      mintUsdCents: FIXED_MINT_TOKENS * 100,
-      btcPriceUsd: preview.price,
-    };
 
-    const response = await fetch(`${base}/mint/finalize`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        wallet: paymentAddress,
-        psbt: signedPsbt,
-        vaultId: vaultMeta.vaultId,
-        broadcast: true,
-        vault: vaultPayload,
-      }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(payload?.message ?? payload?.error ?? 'Failed to finalize PSBT');
+    const response = (await actor.finalize_mint({
+      vault_id: vaultMeta.vaultId,
+      signed_psbt: signedPsbt,
+    })) as { Ok: FinalizeMintOk } | { Err: string };
+
+    if ('Err' in response) {
+      throw new Error(response.Err);
     }
-    setInfoMessage(payload?.txid ? `Broadcasted TXID: ${payload.txid}` : 'PSBT finalized');
+
+    const txid = response.Ok.txid.length ? response.Ok.txid[0] : undefined;
+    setInfoMessage(txid ? `Broadcasted TXID: ${txid}` : 'PSBT finalized');
     if (paymentAccount) {
       await loadVaults(paymentAccount.address);
     }
-  }, [backendUrl, paymentAddress, vaultMeta, paymentAccount, loadVaults, preview]);
+  }, [actor, vaultMeta, paymentAccount, loadVaults]);
 
   const handleSign = useCallback(async (psbtOverride?: string, inputOverride?: number) => {
     const psbtToSign = psbtOverride ?? psbtBase64;

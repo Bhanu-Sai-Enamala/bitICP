@@ -21,6 +21,10 @@ type CollateralPreview = record {
 type BackendConfig = record {
   base_url : text;
   api_key : opt text;
+  ordinals_sats : nat64;
+  fee_recipient_sats : nat64;
+  fee_recipient_address : text;
+  rune_op_return_hex : text;
 };
 
 type InputRef = record {
@@ -58,6 +62,17 @@ type MintResponse = record {
   result : MintResult;
 };
 
+type FinalizeMintRequest = record {
+  vault_id : text;
+  signed_psbt : text;
+};
+
+type FinalizeMintResponse = record {
+  vault_id : text;
+  txid : opt text;
+  hex : text;
+};
+
 type VaultSummary = record {
   vault_id : text;
   vault_address : text;
@@ -88,6 +103,8 @@ type BuildPsbtRequest = record {
   ordinals : AddressBinding;
   payment : AddressBinding;
   amounts : opt AmountOverrides;
+  inputs_override : opt vec InputRef;
+  outputs_override_json : opt text;
 };
 
 type WithdrawInput = record {
@@ -137,7 +154,11 @@ service : {
   get_backend_config: () -> (BackendConfig) query;
   get_collateral_preview: () -> (variant { Ok : CollateralPreview; Err : text });
   set_backend_config: (text, opt text) -> ();
+  set_fee_config: (nat64, nat64, text, text) -> ();
+  set_protocol_keys: (text, text, text) -> ();
+  set_schnorr_key: (text) -> (variant { Ok : null; Err : text });
   build_psbt: (BuildPsbtRequest) -> (variant { Ok : MintResponse; Err : text });
+  finalize_mint: (FinalizeMintRequest) -> (variant { Ok : FinalizeMintResponse; Err : text });
   prepare_withdraw: (text) -> (variant { Ok : WithdrawPrepareResponse; Err : text });
   finalize_withdraw: (WithdrawFinalizeRequest) -> (variant { Ok : WithdrawFinalizeResponse; Err : text });
   list_user_vaults: (text) -> (variant { Ok : vec VaultSummary; Err : text });

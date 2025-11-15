@@ -14,6 +14,8 @@ export interface MintRequestBody {
   protocolPublicKey: string;
   protocolChainCode: string;
   amounts?: Partial<MintOutputAmounts>;
+  inputsOverride?: Array<{ txid: string; vout: number }>;
+  outputsOverrideJson?: string;
 }
 
 export interface MintOutputAmounts {

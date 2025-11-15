@@ -9,7 +9,7 @@
       "metadata": [
         {
           "name": "candid:service",
-          "path": "canisters/stablecoin/stablecoin.did"
+          "path": "./src/declarations/stablecoin/stablecoin.did"
         }
       ]
     },
@@ -28,6 +28,16 @@
   "defaults": {
     "build": {
       "args": "--release"
+    }
+  },
+  "networks": {
+    "local": {
+      "bind": "127.0.0.1:4943",
+      "type": "ephemeral",
+      "bitcoin": {
+        "enabled": true,
+        "network": "testnet"
+      }
     }
   },
   "output_env_file": ".dfx/local/canister_ids.env"

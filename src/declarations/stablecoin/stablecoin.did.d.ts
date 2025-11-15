@@ -15,13 +15,10 @@ export interface AmountOverrides {
 export interface BackendConfig {
   'base_url' : string,
   'api_key' : [] | [string],
-}
-export interface CollateralPreview {
-  'price' : number,
-  'sats' : bigint,
-  'ratio_bps' : number,
-  'usd_cents' : number,
-  'using_fallback_price' : boolean,
+  'rune_op_return_hex' : string,
+  'ordinals_sats' : bigint,
+  'fee_recipient_address' : string,
+  'fee_recipient_sats' : bigint,
 }
 export interface BuildPsbtRequest {
   'ordinals' : AddressBinding,
@@ -29,9 +26,27 @@ export interface BuildPsbtRequest {
   'rune' : string,
   'amounts' : [] | [AmountOverrides],
   'fee_rate' : number,
+  'inputs_override' : [] | [Array<InputRef>],
   'payment' : AddressBinding,
+  'outputs_override_json' : [] | [string],
 }
 export interface ChangeOutput { 'amount_btc' : string, 'address' : string }
+export interface CollateralPreview {
+  'using_fallback_price' : boolean,
+  'sats' : bigint,
+  'ratio_bps' : number,
+  'usd_cents' : number,
+  'price' : number,
+}
+export interface FinalizeMintRequest {
+  'vault_id' : string,
+  'signed_psbt' : string,
+}
+export interface FinalizeMintResponse {
+  'hex' : string,
+  'txid' : [] | [string],
+  'vault_id' : string,
+}
 export interface InputRef { 'txid' : string, 'vout' : number }
 export interface MintResponse {
   'result' : MintResult,
@@ -57,25 +72,25 @@ export interface MintResult {
   'patched_psbt' : string,
 }
 export interface VaultSummary {
+  'confirmations' : number,
+  'last_btc_price_usd' : [] | [number],
+  'mint_usd_cents' : [] | [bigint],
   'withdraw_txid' : [] | [string],
+  'locked_collateral_btc' : number,
   'ordinals_address' : string,
   'rune' : string,
+  'mint_tokens' : [] | [number],
   'txid' : [] | [string],
   'protocol_public_key' : string,
   'vault_id' : string,
   'created_at' : bigint,
   'vault_address' : string,
   'fee_rate' : number,
-  'collateral_sats' : bigint,
-  'locked_collateral_btc' : number,
-  'payment_address' : string,
-  'confirmations' : number,
-  'min_confirmations' : number,
   'withdrawable' : boolean,
-  'last_btc_price_usd' : [] | [number],
+  'min_confirmations' : number,
+  'collateral_sats' : bigint,
+  'payment_address' : string,
   'collateral_ratio_bps' : [] | [number],
-  'mint_tokens' : [] | [number],
-  'mint_usd_cents' : [] | [bigint],
   'health' : [] | [string],
 }
 export interface WithdrawFinalizeRequest {
@@ -116,6 +131,11 @@ export interface _SERVICE {
     { 'Ok' : MintResponse } |
       { 'Err' : string }
   >,
+  'finalize_mint' : ActorMethod<
+    [FinalizeMintRequest],
+    { 'Ok' : FinalizeMintResponse } |
+      { 'Err' : string }
+  >,
   'finalize_withdraw' : ActorMethod<
     [WithdrawFinalizeRequest],
     { 'Ok' : WithdrawFinalizeResponse } |
@@ -140,6 +160,13 @@ export interface _SERVICE {
       { 'Err' : string }
   >,
   'set_backend_config' : ActorMethod<[string, [] | [string]], undefined>,
+  'set_fee_config' : ActorMethod<[bigint, bigint, string, string], undefined>,
+  'set_protocol_keys' : ActorMethod<[string, string, string], undefined>,
+  'set_schnorr_key' : ActorMethod<
+    [string],
+    { 'Ok' : null } |
+      { 'Err' : string }
+  >,
   'sign_withdraw' : ActorMethod<
     [WithdrawSignRequest],
     { 'Ok' : WithdrawSignResponse } |

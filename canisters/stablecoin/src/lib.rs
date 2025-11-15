@@ -1,5 +1,11 @@
+use bech32::{self, u5, ToBase32, Variant};
 use candid::{CandidType, Func, Nat, Principal};
+use hex;
 use ic_cdk::api::call::RejectionCode;
+use ic_cdk::api::management_canister::bitcoin::{
+    bitcoin_get_utxos, bitcoin_send_transaction, BitcoinNetwork, GetUtxosRequest,
+    SendTransactionRequest, Utxo,
+};
 use ic_cdk::api::management_canister::http_request::{
     http_request, CanisterHttpRequestArgument, HttpHeader, HttpMethod, HttpResponse, TransformArgs,
     TransformContext, TransformFunc,
@@ -8,9 +14,16 @@ use ic_cdk::api::time;
 use ic_cdk::caller;
 use ic_cdk::storage::{stable_restore, stable_save};
 use ic_cdk_macros::{init, post_upgrade, pre_upgrade, query, update};
+use k256::elliptic_curve::bigint::U256;
+use k256::elliptic_curve::ops::Reduce;
+use k256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+use k256::{AffinePoint, EncodedPoint, FieldBytes, ProjectivePoint, Scalar};
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
+use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fmt::Write as FmtWrite;
 // Using explicit Candid-compatible types (avoid depending on ic-cdk internal aliases)
 
@@ -23,13 +36,34 @@ const SCHNORR_KEY_ALGORITHM: &str = "bip340secp256k1";
 // Local replica exposes keys named `dfx_test_key` for ECDSA/Schnorr.
 // Use this for local dev; swap to `key_1` (or production name) when moving to mainnet.
 const SCHNORR_KEY_NAME: &str = "dfx_test_key";
+const CANISTER_VAULTS_ENABLED: bool = true;
 const PROTOCOL_DOMAIN_LABEL: &[u8] = b"usdb";
 const PROTOCOL_ROLE_LABEL: &[u8] = b"proto";
+const TX_FEE_BUFFER_SATS: u64 = 3_000;
+const DEFAULT_ORDINALS_SATS: u64 = 1_000;
+const DEFAULT_FEE_SATS: u64 = 1_000;
+const DEFAULT_RUNE_HEX: &str = "00dde905020a00";
+const FIXED_MINT_TOKENS: u64 = 10;
+const FIXED_MINT_USD_CENTS: u64 = 1_000;
+const DEFAULT_MIN_CONFIRMATIONS: u32 = 6;
+const TAPROOT_LEAF_VERSION: u8 = 0xC0;
+
+fn bitcoin_network() -> BitcoinNetwork {
+    BitcoinNetwork::Testnet
+}
 
 #[derive(Clone, Default, CandidType, Deserialize, Serialize)]
 struct BackendConfig {
     base_url: String,
     api_key: Option<String>,
+    #[serde(default)]
+    ordinals_sats: u64,
+    #[serde(default)]
+    fee_recipient_sats: u64,
+    #[serde(default)]
+    fee_recipient_address: String,
+    #[serde(default)]
+    rune_op_return_hex: String,
 }
 
 #[derive(Clone, CandidType, Deserialize, Serialize)]
@@ -49,6 +83,13 @@ impl Default for CollateralParams {
     }
 }
 
+#[derive(Clone, Default, CandidType, Deserialize, Serialize)]
+struct ProtocolKeysConfig {
+    guardian_internal_key: String,
+    vault_key_a: String,
+    vault_key_b: String,
+}
+
 #[derive(Clone, CandidType, Deserialize, Serialize)]
 struct Settings {
     backend: BackendConfig,
@@ -58,6 +99,10 @@ struct Settings {
     xrc_cycles_budget: u128,
     collateral: CollateralParams,
     next_vault_id: u64,
+    #[serde(default = "default_schnorr_key_name")]
+    schnorr_key_name: String,
+    #[serde(default)]
+    protocol_keys: ProtocolKeysConfig,
 }
 
 impl Default for Settings {
@@ -68,12 +113,23 @@ impl Default for Settings {
             xrc_cycles_budget: XRC_DEFAULT_CYCLES_BUDGET,
             collateral: CollateralParams::default(),
             next_vault_id: 1,
+            schnorr_key_name: default_schnorr_key_name(),
+            protocol_keys: ProtocolKeysConfig {
+                guardian_internal_key:
+                    "03b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1".into(),
+                vault_key_a: "0265f4ca4c628565963028803861eef79ff19f49223822e9bdfc49532148e79363"
+                    .into(),
+                vault_key_b: "03cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663"
+                    .into(),
+            },
         }
     }
 }
 
 thread_local! {
     static SETTINGS: RefCell<Settings> = RefCell::new(Settings::default());
+    static VAULTS: RefCell<BTreeMap<String, StoredVaultRecord>> = RefCell::new(BTreeMap::new());
+    static PENDING_MINTS: RefCell<BTreeMap<String, PendingMintRecord>> = RefCell::new(BTreeMap::new());
 }
 
 #[init]
@@ -84,11 +140,28 @@ fn init() {
 #[pre_upgrade]
 fn pre_upgrade() {
     let cfg = SETTINGS.with(|s| s.borrow().clone());
-    stable_save((cfg,)).expect("failed to save settings");
+    let vaults = VAULTS.with(|v| v.borrow().clone());
+    let pending = PENDING_MINTS.with(|p| p.borrow().clone());
+    stable_save((cfg, vaults, pending)).expect("failed to save settings");
 }
 
 #[post_upgrade]
 fn post_upgrade() {
+    if let Ok((cfg, vaults, pending)) = stable_restore::<(
+        Settings,
+        BTreeMap<String, StoredVaultRecord>,
+        BTreeMap<String, PendingMintRecord>,
+    )>() {
+        SETTINGS.with(|s| *s.borrow_mut() = cfg);
+        VAULTS.with(|v| *v.borrow_mut() = vaults);
+        PENDING_MINTS.with(|p| *p.borrow_mut() = pending);
+        return;
+    }
+    if let Ok((cfg, vaults)) = stable_restore::<(Settings, BTreeMap<String, StoredVaultRecord>)>() {
+        SETTINGS.with(|s| *s.borrow_mut() = cfg);
+        VAULTS.with(|v| *v.borrow_mut() = vaults);
+        return;
+    }
     // Try restore new layout first; fall back to legacy BackendConfig-only
     if let Ok((cfg,)) = stable_restore::<(Settings,)>() {
         SETTINGS.with(|s| *s.borrow_mut() = cfg);
@@ -134,6 +207,52 @@ fn set_backend_config(base_url: String, api_key: Option<String>) {
         st.backend.base_url = base_url;
         st.backend.api_key = api_key;
     });
+}
+
+#[update]
+fn set_fee_config(
+    ordinals_sats: u64,
+    fee_recipient_sats: u64,
+    fee_recipient_address: String,
+    rune_op_return_hex: String,
+) {
+    SETTINGS.with(|settings| {
+        let mut st = settings.borrow_mut();
+        st.backend.ordinals_sats = ordinals_sats;
+        st.backend.fee_recipient_sats = fee_recipient_sats;
+        st.backend.fee_recipient_address = fee_recipient_address;
+        st.backend.rune_op_return_hex = rune_op_return_hex.to_lowercase();
+    });
+}
+
+#[update]
+fn set_protocol_keys(guardian_internal_key: String, vault_key_a: String, vault_key_b: String) {
+    if guardian_internal_key.trim().is_empty()
+        || vault_key_a.trim().is_empty()
+        || vault_key_b.trim().is_empty()
+    {
+        ic_cdk::trap("protocol keys must be non-empty");
+    }
+    SETTINGS.with(|settings| {
+        let mut st = settings.borrow_mut();
+        st.protocol_keys.guardian_internal_key = guardian_internal_key.to_lowercase();
+        st.protocol_keys.vault_key_a = vault_key_a.to_lowercase();
+        st.protocol_keys.vault_key_b = vault_key_b.to_lowercase();
+    });
+}
+
+#[update]
+fn set_schnorr_key(name: String) -> Result<(), String> {
+    let trimmed = name.trim();
+    match trimmed {
+        "dfx_test_key" | "test_key_1" | "key_1" => {
+            SETTINGS.with(|settings| {
+                settings.borrow_mut().schnorr_key_name = trimmed.to_string();
+            });
+            Ok(())
+        }
+        _ => Err("unsupported_schnorr_key".into()),
+    }
 }
 
 // ===== XRC bindings (minimal) =====
@@ -294,6 +413,30 @@ struct AddressBinding {
     public_key: String,
 }
 
+#[derive(Clone, CandidType, Deserialize, Serialize, Default)]
+struct StoredVaultRecord {
+    vault_id: String,
+    payment_address: String,
+    ordinals_address: String,
+    vault_address: String,
+    protocol_public_key: String,
+    protocol_chain_code: String,
+    collateral_sats: u64,
+    rune: String,
+    fee_rate: f64,
+    created_at: u64,
+    txid: Option<String>,
+    withdraw_txid: Option<String>,
+    confirmations: u32,
+    min_confirmations: u32,
+    withdrawable: bool,
+    mint_tokens: Option<f64>,
+    mint_usd_cents: Option<u64>,
+    collateral_ratio_bps: Option<u32>,
+    last_btc_price_usd: Option<f64>,
+    health: Option<String>,
+}
+
 #[derive(Clone, CandidType, Deserialize, Serialize)]
 struct AmountOverrides {
     ordinals_sats: Option<u64>,
@@ -381,10 +524,424 @@ fn protocol_derivation_path(vault_id: u64) -> Vec<Vec<u8>> {
 }
 
 fn schnorr_key_id() -> SchnorrKeyId {
+    let name = SETTINGS.with(|s| s.borrow().schnorr_key_name.clone());
     SchnorrKeyId {
-        name: SCHNORR_KEY_NAME.to_string(),
+        name,
         algorithm: SignatureAlgorithm::Bip340Secp256k1,
     }
+}
+
+fn default_schnorr_key_name() -> String {
+    SCHNORR_KEY_NAME.to_string()
+}
+
+fn canister_vaults_enabled() -> bool {
+    CANISTER_VAULTS_ENABLED
+}
+
+fn store_pending_mint(result: &MintResult, btc_price_usd: f64) {
+    if !canister_vaults_enabled() {
+        return;
+    }
+
+    let pending = PendingMintRecord {
+        vault: result.clone(),
+        btc_price_usd,
+        mint_tokens: FIXED_MINT_TOKENS,
+        mint_usd_cents: FIXED_MINT_USD_CENTS,
+        created_at: ic_cdk::api::time(),
+    };
+
+    PENDING_MINTS.with(|store| {
+        store.borrow_mut().insert(result.vault_id.clone(), pending);
+    });
+}
+
+fn take_pending_mint(vault_id: &str) -> Option<PendingMintRecord> {
+    if !canister_vaults_enabled() {
+        return None;
+    }
+    PENDING_MINTS.with(|store| store.borrow_mut().remove(vault_id))
+}
+
+fn restore_pending_mint(record: PendingMintRecord) {
+    if !canister_vaults_enabled() {
+        return;
+    }
+    let vault_id = record.vault.vault_id.clone();
+    PENDING_MINTS.with(|store| {
+        store.borrow_mut().insert(vault_id, record);
+    });
+}
+
+fn persist_finalized_vault(pending: PendingMintRecord, txid: String, settings: &Settings) {
+    if !canister_vaults_enabled() {
+        return;
+    }
+    let vault = pending.vault;
+    let record = StoredVaultRecord {
+        vault_id: vault.vault_id.clone(),
+        payment_address: vault.payment_address.clone(),
+        ordinals_address: vault.ordinals_address.clone(),
+        vault_address: vault.vault_address.clone(),
+        protocol_public_key: vault.protocol_public_key.clone(),
+        protocol_chain_code: vault.protocol_chain_code.clone(),
+        collateral_sats: vault.collateral_sats,
+        rune: vault.rune.clone(),
+        fee_rate: vault.fee_rate,
+        created_at: pending.created_at,
+        txid: Some(txid),
+        withdraw_txid: None,
+        confirmations: 0,
+        min_confirmations: DEFAULT_MIN_CONFIRMATIONS,
+        withdrawable: false,
+        mint_tokens: Some(pending.mint_tokens as f64),
+        mint_usd_cents: Some(pending.mint_usd_cents),
+        collateral_ratio_bps: Some(settings.collateral.ratio_bps as u32),
+        last_btc_price_usd: Some(pending.btc_price_usd),
+        health: Some("pending".into()),
+    };
+
+    VAULTS.with(|store| {
+        store.borrow_mut().insert(record.vault_id.clone(), record);
+    });
+}
+
+fn stored_vaults_for_payment(payment: &str) -> Vec<VaultSummary> {
+    let target = payment.to_lowercase();
+    let mut rows = VAULTS.with(|store| {
+        store
+            .borrow()
+            .values()
+            .filter(|record| record.payment_address.to_lowercase() == target)
+            .map(|record| stored_vault_to_summary(record))
+            .collect::<Vec<_>>()
+    });
+    rows.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    rows
+}
+
+fn stored_vault_to_summary(record: &StoredVaultRecord) -> VaultSummary {
+    VaultSummary {
+        vault_id: record.vault_id.clone(),
+        vault_address: record.vault_address.clone(),
+        collateral_sats: record.collateral_sats,
+        locked_collateral_btc: record.collateral_sats as f64 / 100_000_000f64,
+        protocol_public_key: record.protocol_public_key.clone(),
+        created_at: record.created_at,
+        rune: record.rune.clone(),
+        fee_rate: record.fee_rate,
+        ordinals_address: record.ordinals_address.clone(),
+        payment_address: record.payment_address.clone(),
+        txid: record.txid.clone(),
+        withdraw_txid: record.withdraw_txid.clone(),
+        confirmations: record.confirmations,
+        min_confirmations: record.min_confirmations,
+        withdrawable: record.withdrawable,
+        last_btc_price_usd: record.last_btc_price_usd,
+        collateral_ratio_bps: record.collateral_ratio_bps,
+        mint_tokens: record.mint_tokens,
+        mint_usd_cents: record.mint_usd_cents,
+        health: record.health.clone(),
+    }
+}
+
+fn sats_to_btc_float(sats: u64) -> f64 {
+    (sats as f64) / 100_000_000f64
+}
+
+fn txid_bytes_to_hex(txid: &[u8]) -> String {
+    let mut bytes = txid.to_vec();
+    bytes.reverse();
+    hex::encode(bytes)
+}
+
+fn txid_from_raw_hex(raw_hex: &str) -> Result<String, String> {
+    let bytes = hex::decode(raw_hex).map_err(|_| "invalid_hex".to_string())?;
+    let first = Sha256::digest(&bytes);
+    let second = Sha256::digest(first.as_slice());
+    let mut txid = second.to_vec();
+    txid.reverse();
+    Ok(hex::encode(txid))
+}
+
+async fn build_mint_overrides(
+    settings: &Settings,
+    payment_address: &str,
+    ordinals_address: &str,
+    vault_address: &str,
+    vault_sats: u64,
+) -> Result<Option<MintOverrides>, String> {
+    let cfg = &settings.backend;
+    if cfg.fee_recipient_address.is_empty() || cfg.rune_op_return_hex.is_empty() {
+        return Ok(None);
+    }
+
+    let ordinals_sats = if cfg.ordinals_sats > 0 {
+        cfg.ordinals_sats
+    } else {
+        DEFAULT_ORDINALS_SATS
+    };
+    let fee_sats = if cfg.fee_recipient_sats > 0 {
+        cfg.fee_recipient_sats
+    } else {
+        DEFAULT_FEE_SATS
+    };
+    let rune_hex = if cfg.rune_op_return_hex.is_empty() {
+        DEFAULT_RUNE_HEX.to_string()
+    } else {
+        cfg.rune_op_return_hex.clone()
+    };
+
+    let total_required = ordinals_sats
+        .saturating_add(fee_sats)
+        .saturating_add(vault_sats)
+        .saturating_add(TX_FEE_BUFFER_SATS);
+
+    let get_request = GetUtxosRequest {
+        address: payment_address.to_string(),
+        network: bitcoin_network(),
+        filter: None,
+    };
+
+    let utxo_response = match bitcoin_get_utxos(get_request).await {
+        Ok((resp,)) => resp,
+        Err((code, msg)) => {
+            ic_cdk::println!("[build_psbt] bitcoin_get_utxos failed {:?}: {}", code, msg);
+            return Ok(None);
+        }
+    };
+
+    if utxo_response.utxos.is_empty() {
+        ic_cdk::println!("[build_psbt] no utxos available for {}", payment_address);
+        return Ok(None);
+    }
+
+    let mut utxos = utxo_response.utxos;
+    utxos.sort_by(|a, b| {
+        a.value
+            .cmp(&b.value)
+            .then_with(|| a.outpoint.vout.cmp(&b.outpoint.vout))
+    });
+
+    let mut selected: Vec<Utxo> = Vec::new();
+    let mut sum = 0u64;
+    for utxo in utxos.into_iter() {
+        sum = sum.saturating_add(utxo.value);
+        selected.push(utxo);
+        if sum >= total_required {
+            break;
+        }
+    }
+
+    if sum < total_required {
+        ic_cdk::println!(
+            "[build_psbt] insufficient utxos sum={} required={}",
+            sum,
+            total_required
+        );
+        return Ok(None);
+    }
+
+    let change_sats = sum.saturating_sub(total_required);
+
+    let mut outputs = serde_json::Map::new();
+    outputs.insert("data".into(), json!(rune_hex));
+    outputs.insert(
+        ordinals_address.to_string(),
+        json!(sats_to_btc_float(ordinals_sats)),
+    );
+    outputs.insert(
+        cfg.fee_recipient_address.clone(),
+        json!(sats_to_btc_float(fee_sats)),
+    );
+    outputs.insert(
+        vault_address.to_string(),
+        json!(sats_to_btc_float(vault_sats)),
+    );
+    if change_sats > 0 {
+        outputs.insert(
+            payment_address.to_string(),
+            json!(sats_to_btc_float(change_sats)),
+        );
+    }
+    let outputs_json = serde_json::Value::Object(outputs).to_string();
+
+    let inputs = selected
+        .iter()
+        .map(|utxo| InputRef {
+            txid: txid_bytes_to_hex(&utxo.outpoint.txid),
+            vout: utxo.outpoint.vout,
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Some(MintOverrides {
+        inputs,
+        outputs_json,
+    }))
+}
+
+fn derive_vault_address(
+    settings: &Settings,
+    protocol_public_key: &str,
+    user_payment_public_key: &str,
+) -> Result<String, String> {
+    let guardian_key = parse_x_only_key(&settings.protocol_keys.guardian_internal_key)?;
+    let vault_a = parse_x_only_key(&settings.protocol_keys.vault_key_a)?;
+    let vault_b = parse_x_only_key(&settings.protocol_keys.vault_key_b)?;
+    let protocol = parse_x_only_key(protocol_public_key)?;
+    let user = parse_x_only_key(user_payment_public_key)?;
+
+    let leaf_a_script = multi_a_script(&[protocol, user], 2);
+    let leaf_b_script = multi_a_script(&[vault_a, vault_b], 2);
+    let leaf_a_hash = tap_leaf_hash(&leaf_a_script);
+    let leaf_b_hash = tap_leaf_hash(&leaf_b_script);
+    let merkle_root = tap_branch_hash(leaf_a_hash, leaf_b_hash);
+    let output_key = taproot_output_key(&guardian_key, Some(merkle_root))?;
+    taproot_address(bitcoin_network(), &output_key)
+}
+
+fn parse_x_only_key(hex_str: &str) -> Result<[u8; 32], String> {
+    let bytes = from_hex(hex_str.trim())?;
+    match bytes.len() {
+        32 => {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&bytes);
+            Ok(out)
+        }
+        33 => {
+            if bytes[0] != 0x02 && bytes[0] != 0x03 {
+                return Err("invalid_compressed_pubkey".into());
+            }
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&bytes[1..]);
+            Ok(out)
+        }
+        _ => Err("invalid_pubkey_length".into()),
+    }
+}
+
+fn multi_a_script(keys: &[[u8; 32]], threshold: u8) -> Vec<u8> {
+    let mut script = Vec::with_capacity(keys.len() * 34 + 4);
+    for (idx, key) in keys.iter().enumerate() {
+        script.push(0x20);
+        script.extend_from_slice(key);
+        if idx == 0 {
+            script.push(0xAC); // OP_CHECKSIG
+        } else {
+            script.push(0xBA); // OP_CHECKSIGADD
+        }
+    }
+    script.extend_from_slice(&encode_script_num(threshold));
+    script.push(0x9C); // OP_NUMEQUAL
+    script
+}
+
+fn encode_script_num(value: u8) -> Vec<u8> {
+    match value {
+        0 => vec![0x00],
+        1..=16 => vec![0x50 + value],
+        _ => vec![value],
+    }
+}
+
+fn tap_leaf_hash(script: &[u8]) -> [u8; 32] {
+    let mut payload = Vec::with_capacity(1 + script.len() + 5);
+    payload.push(TAPROOT_LEAF_VERSION);
+    payload.extend_from_slice(&encode_varint(script.len() as u64));
+    payload.extend_from_slice(script);
+    tagged_hash("TapLeaf", &payload)
+}
+
+fn tap_branch_hash(left: [u8; 32], right: [u8; 32]) -> [u8; 32] {
+    let (first, second) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    let mut payload = Vec::with_capacity(64);
+    payload.extend_from_slice(&first);
+    payload.extend_from_slice(&second);
+    tagged_hash("TapBranch", &payload)
+}
+
+fn taproot_output_key(
+    internal_key: &[u8; 32],
+    merkle_root: Option<[u8; 32]>,
+) -> Result<[u8; 32], String> {
+    let mut payload = Vec::with_capacity(64);
+    payload.extend_from_slice(internal_key);
+    if let Some(root) = merkle_root {
+        payload.extend_from_slice(&root);
+    }
+    let tweak = tagged_hash("TapTweak", &payload);
+    let tweak_bytes = FieldBytes::from_slice(&tweak).clone();
+    let tweak_scalar = <Scalar as Reduce<U256>>::reduce_bytes(&tweak_bytes);
+    let internal_point = projective_point_from_xonly(internal_key)?;
+    let tweaked = internal_point + ProjectivePoint::GENERATOR * tweak_scalar;
+    let affine = tweaked.to_affine();
+    let encoded = affine.to_encoded_point(false);
+    let x = encoded
+        .x()
+        .ok_or_else(|| "tweaked_point_missing_x".to_string())?;
+    let mut out = [0u8; 32];
+    out.copy_from_slice(x.as_slice());
+    Ok(out)
+}
+
+fn projective_point_from_xonly(bytes: &[u8; 32]) -> Result<ProjectivePoint, String> {
+    let mut with_prefix = Vec::with_capacity(33);
+    with_prefix.push(0x02);
+    with_prefix.extend_from_slice(bytes);
+    let encoded =
+        EncodedPoint::from_bytes(&with_prefix).map_err(|_| "invalid_internal_key".to_string())?;
+    let affine = Option::<AffinePoint>::from(AffinePoint::from_encoded_point(&encoded))
+        .ok_or_else(|| "invalid_internal_key".to_string())?;
+    Ok(ProjectivePoint::from(affine))
+}
+
+fn tagged_hash(tag: &str, data: &[u8]) -> [u8; 32] {
+    let mut tag_hasher = Sha256::new();
+    tag_hasher.update(tag.as_bytes());
+    let tag_digest = tag_hasher.finalize();
+    let mut hasher = Sha256::new();
+    hasher.update(&tag_digest);
+    hasher.update(&tag_digest);
+    hasher.update(data);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+fn encode_varint(value: u64) -> Vec<u8> {
+    if value < 0xFD {
+        vec![value as u8]
+    } else if value <= 0xFFFF {
+        let mut out = vec![0xFD];
+        out.extend_from_slice(&(value as u16).to_le_bytes());
+        out
+    } else if value <= 0xFFFF_FFFF {
+        let mut out = vec![0xFE];
+        out.extend_from_slice(&(value as u32).to_le_bytes());
+        out
+    } else {
+        let mut out = vec![0xFF];
+        out.extend_from_slice(&value.to_le_bytes());
+        out
+    }
+}
+
+fn taproot_address(network: BitcoinNetwork, output_key: &[u8; 32]) -> Result<String, String> {
+    let hrp = match network {
+        BitcoinNetwork::Mainnet => "bc",
+        BitcoinNetwork::Testnet => "tb",
+        BitcoinNetwork::Regtest => "bcrt",
+    };
+    let version = u5::try_from_u8(1).map_err(|_| "invalid_witness_version")?;
+    let mut data = vec![version];
+    data.extend_from_slice(&output_key.to_vec().to_base32());
+    bech32::encode(hrp, data, Variant::Bech32m).map_err(|err| format!("bech32_error: {}", err))
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -790,6 +1347,10 @@ struct BackendBuildPsbtRequest {
     vault_id: String,
     protocol_public_key: String,
     protocol_chain_code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inputs_override: Option<Vec<InputRef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outputs_override_json: Option<String>,
 }
 
 impl From<AddressBinding> for BackendAddressBinding {
@@ -832,6 +1393,20 @@ struct MintResult {
     payment_address: String,
 }
 
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+struct PendingMintRecord {
+    vault: MintResult,
+    btc_price_usd: f64,
+    mint_tokens: u64,
+    mint_usd_cents: u64,
+    created_at: u64,
+}
+
+struct MintOverrides {
+    inputs: Vec<InputRef>,
+    outputs_json: String,
+}
+
 impl From<BackendMintResult> for MintResult {
     fn from(value: BackendMintResult) -> Self {
         Self {
@@ -872,6 +1447,28 @@ impl From<BackendMintResponse> for MintResponse {
     }
 }
 
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+struct FinalizeMintRequest {
+    vault_id: String,
+    signed_psbt: String,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+struct FinalizeMintResponse {
+    vault_id: String,
+    txid: Option<String>,
+    hex: String,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendFinalizeMintResponse {
+    vault_id: String,
+    hex: String,
+    complete: bool,
+    txid: Option<String>,
+}
+
 #[update]
 async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
     let settings = SETTINGS.with(|s| s.borrow().clone());
@@ -888,8 +1485,10 @@ async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
     );
 
     // Compute dynamic collateral from XRC
+    let mut price_used = COLLATERAL_FALLBACK_PRICE_USD;
     let dynamic_vault_sats = match xrc_btc_usd_price().await {
         Ok(price) => {
+            price_used = price;
             let sats = compute_target_collateral_sats(
                 price,
                 settings.collateral.ratio_bps,
@@ -942,7 +1541,7 @@ async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
         Some(fallback_sats)
     };
 
-    if let Some(vs) = selected_vault_sats {
+    let vault_sats_final = if let Some(vs) = selected_vault_sats {
         backend_amounts
             .get_or_insert(BackendAmountOverrides {
                 ordinals_sats: None,
@@ -950,9 +1549,10 @@ async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
                 vault_sats: None,
             })
             .vault_sats = Some(vs);
+        vs
     } else {
         return Err("vault_sats_unavailable".into());
-    }
+    };
 
     let vault_id = next_vault_id();
     let protocol_key = derive_protocol_key(vault_id).await?;
@@ -961,6 +1561,28 @@ async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
         vault_id,
         protocol_key.public_key_hex
     );
+
+    let vault_address = derive_vault_address(
+        &settings,
+        &protocol_key.public_key_hex,
+        &request.payment.public_key,
+    )?;
+
+    let override_payload = match build_mint_overrides(
+        &settings,
+        &request.payment.address,
+        &request.ordinals.address,
+        &vault_address,
+        vault_sats_final,
+    )
+    .await
+    {
+        Ok(val) => val,
+        Err(err) => {
+            ic_cdk::println!("[build_psbt] override build failed {}", err);
+            None
+        }
+    };
 
     let backend_request = BackendBuildPsbtRequest {
         rune: request.rune,
@@ -972,6 +1594,8 @@ async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
         vault_id: vault_id.to_string(),
         protocol_public_key: protocol_key.public_key_hex.clone(),
         protocol_chain_code: protocol_key.chain_code_hex.clone(),
+        inputs_override: override_payload.as_ref().map(|p| p.inputs.clone()),
+        outputs_override_json: override_payload.as_ref().map(|p| p.outputs_json.clone()),
     };
     let body = serde_json::to_vec(&backend_request).map_err(|err| err.to_string())?;
     let mut headers = vec![HttpHeader {
@@ -1002,14 +1626,135 @@ async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
     let parsed: BackendMintResponse = serde_json::from_slice(&response.body)
         .map_err(|err| format!("invalid backend json: {}", err))?;
 
+    let mint_response = MintResponse::from(parsed);
+
     ic_cdk::println!(
         "[build_psbt] success -> wallet: {}, vault: {}, inputs: {}",
-        parsed.result.wallet,
-        parsed.result.vault_address,
-        parsed.result.inputs.len()
+        mint_response.result.wallet,
+        mint_response.result.vault_address,
+        mint_response.result.inputs.len()
     );
 
-    Ok(MintResponse::from(parsed))
+    store_pending_mint(&mint_response.result, price_used);
+
+    Ok(mint_response)
+}
+
+#[update]
+async fn finalize_mint(request: FinalizeMintRequest) -> Result<FinalizeMintResponse, String> {
+    if !canister_vaults_enabled() {
+        return Err("vault_storage_disabled".into());
+    }
+    if request.vault_id.trim().is_empty() {
+        return Err("missing_vault_id".into());
+    }
+
+    let settings = SETTINGS.with(|s| s.borrow().clone());
+    let config = settings.backend.clone();
+    if config.base_url.is_empty() {
+        return Err("backend_not_configured".into());
+    }
+
+    let pending = match take_pending_mint(&request.vault_id) {
+        Some(record) => record,
+        None => return Err("vault_not_pending".into()),
+    };
+
+    let mut headers = vec![HttpHeader {
+        name: "Content-Type".into(),
+        value: "application/json".into(),
+    }];
+    if let Some(api_key) = config.api_key.clone() {
+        headers.push(HttpHeader {
+            name: "x-api-key".into(),
+            value: api_key,
+        });
+    }
+
+    let body = serde_json::json!({
+        "wallet": pending.vault.wallet,
+        "psbt": request.signed_psbt,
+        "vaultId": pending.vault.vault_id,
+        "broadcast": false,
+        "vault": {
+            "vaultAddress": pending.vault.vault_address,
+            "protocolPublicKey": pending.vault.protocol_public_key,
+            "protocolChainCode": pending.vault.protocol_chain_code,
+            "descriptor": pending.vault.descriptor,
+            "collateralSats": pending.vault.collateral_sats,
+            "rune": pending.vault.rune,
+            "feeRate": pending.vault.fee_rate,
+            "ordinalsAddress": pending.vault.ordinals_address,
+            "paymentAddress": pending.vault.payment_address,
+            "mintTokens": pending.mint_tokens,
+            "mintUsdCents": pending.mint_usd_cents,
+            "btcPriceUsd": pending.btc_price_usd,
+        }
+    });
+
+    let url = format!("{}/mint/finalize", config.base_url.trim_end_matches('/'));
+    let response = match backend_http_request(
+        url,
+        HttpMethod::POST,
+        Some(serde_json::to_vec(&body).map_err(|err| err.to_string())?),
+        headers.clone(),
+    )
+    .await
+    {
+        Ok(resp) => resp,
+        Err(err) => {
+            restore_pending_mint(pending);
+            return Err(err);
+        }
+    };
+
+    if response.status >= Nat::from(400u32) {
+        restore_pending_mint(pending);
+        return Err(format!("backend responded with status {}", response.status));
+    }
+
+    let parsed: BackendFinalizeMintResponse = match serde_json::from_slice(&response.body) {
+        Ok(val) => val,
+        Err(err) => {
+            restore_pending_mint(pending);
+            return Err(format!("invalid backend json: {}", err));
+        }
+    };
+
+    let txid_value = parsed
+        .txid
+        .clone()
+        .or_else(|| txid_from_raw_hex(&parsed.hex).ok())
+        .ok_or_else(|| {
+            restore_pending_mint(pending.clone());
+            "txid_unavailable".to_string()
+        })?;
+
+    let tx_bytes = match hex::decode(&parsed.hex) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            restore_pending_mint(pending);
+            return Err("invalid_hex_from_backend".into());
+        }
+    };
+
+    if let Err((code, msg)) = bitcoin_send_transaction(SendTransactionRequest {
+        network: bitcoin_network(),
+        transaction: tx_bytes,
+    })
+    .await
+    {
+        restore_pending_mint(pending);
+        return Err(format!("bitcoin_send_transaction {:?}: {}", code, msg));
+    }
+
+    persist_finalized_vault(pending, txid_value.clone(), &settings);
+
+    Ok(FinalizeMintResponse {
+        vault_id: request.vault_id,
+        txid: Some(txid_value),
+        hex: parsed.hex,
+    })
 }
 
 #[update]
@@ -1075,7 +1820,7 @@ async fn finalize_withdraw(
     let mut payload = serde_json::json!({
         "vaultId": request.vault_id,
         "psbt": request.signed_psbt,
-        "broadcast": request.broadcast.unwrap_or(true),
+        "broadcast": false,
     });
     let mut response = backend_http_request(
         endpoint.clone(),
@@ -1116,6 +1861,14 @@ async fn finalize_withdraw(
     }
     let parsed: BackendWithdrawFinalizeSuccess = serde_json::from_slice(&response.body)
         .map_err(|err| format!("invalid backend json: {}", err))?;
+
+    let tx_bytes = hex::decode(&parsed.hex).map_err(|_| "invalid_hex_from_backend".to_string())?;
+    bitcoin_send_transaction(SendTransactionRequest {
+        network: bitcoin_network(),
+        transaction: tx_bytes,
+    })
+    .await
+    .map_err(|err| format!("bitcoin_send_transaction_failed: {:?}", err))?;
     Ok(WithdrawFinalizeResponse {
         vault_id: parsed.vault_id,
         txid: parsed.txid,
@@ -1206,6 +1959,10 @@ fn decode_digest(bytes: &[u8], field: &str) -> Result<[u8; 32], String> {
 
 #[update]
 async fn list_user_vaults(payment_address: String) -> Result<Vec<VaultSummary>, String> {
+    if canister_vaults_enabled() {
+        return Ok(stored_vaults_for_payment(&payment_address));
+    }
+
     let settings = SETTINGS.with(|s| s.borrow().clone());
     let config = settings.backend;
     if config.base_url.is_empty() {

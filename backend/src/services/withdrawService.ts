@@ -801,6 +801,12 @@ export async function finalizeWithdrawPsbt(
   if (broadcast) {
     txid = await runCliRaw(['sendrawtransaction', rawHex]);
     console.info('[withdraw] transaction broadcasted', { vaultId, txid });
+  } else {
+    const decoded = await runCliJson<{ txid: string }>(['decoderawtransaction', rawHex]);
+    txid = decoded.txid;
+    console.info('[withdraw] transaction finalized without broadcast', { vaultId, txid });
+  }
+  if (txid) {
     await vaultStore.setWithdrawTxId(vaultId, txid);
   }
 
