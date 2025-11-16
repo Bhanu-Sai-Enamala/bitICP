@@ -553,10 +553,18 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
 
   const txInfo = await runCliJson<RawTxInfo>(['getrawtransaction', record.txid, 'true']);
   console.info('[withdraw] raw transaction fetched', { vaultId, txid: record.txid });
-  const ordEntry = txInfo.vout.find((v) => matchesAddress(v, record.metadata.ordinalsAddress));
-  const vaultEntry = txInfo.vout.find((v) => matchesAddress(v, record.vaultAddress));
+  const ordinalsIdx = 1;
+  const collateralIdx = 2;
+  const ordEntry = txInfo.vout[ordinalsIdx];
+  const vaultEntry = txInfo.vout[collateralIdx];
   if (!ordEntry || !vaultEntry) {
     throw new Error('vault_outputs_not_found');
+  }
+  if (!matchesAddress(ordEntry, record.metadata.ordinalsAddress)) {
+    throw new Error('ordinals_output_mismatch');
+  }
+  if (!matchesAddress(vaultEntry, record.vaultAddress)) {
+    throw new Error('vault_output_mismatch');
   }
 
   const inputs = [

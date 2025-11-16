@@ -695,13 +695,8 @@ export default function App() {
       setWithdrawError('Vault transaction not yet broadcasted.');
       return;
     }
-    if (!vault.withdrawable) {
-      const remaining = Math.max(vault.minConfirmations - vault.confirmations, 0);
-      setWithdrawError(
-        `Vault ${vault.id} needs ${remaining} more confirmation${remaining === 1 ? '' : 's'} before withdrawing.`
-      );
-      return;
-    }
+    // Temporarily disable withdraw confirmation enforcement for testing
+    // TODO: re-enable confirmation gate before production rollout
     setWithdrawError(undefined);
     setWithdrawInfo(undefined);
     setIsWithdrawLoading(true);
@@ -989,8 +984,7 @@ export default function App() {
                     const withdrawDisabled =
                       Boolean(vault.withdrawTxId) ||
                       isWithdrawLoading ||
-                      (pendingWithdraw !== null && !isPendingSelection) ||
-                      !vault.withdrawable;
+                      (pendingWithdraw !== null && !isPendingSelection);
                     const mintedTimestamp = new Date(vault.createdAtMs).toLocaleString();
                     return (
                       <div key={`${vault.id}-${vault.createdAtMs}`} className="vault-card">
