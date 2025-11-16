@@ -327,7 +327,7 @@ export default function App() {
       inputs: result.inputs.length,
       wallet: result.wallet
     });
-    setVaultMeta({
+    const nextVaultMeta: VaultMeta = {
       vaultId: result.vault_id,
       protocolPublicKey: result.protocol_public_key,
       protocolChainCode: result.protocol_chain_code,
@@ -338,12 +338,13 @@ export default function App() {
       feeRate: result.fee_rate,
       ordinalsAddress: result.ordinals_address,
       paymentAddress: result.payment_address,
-    });
+    };
+    setVaultMeta(nextVaultMeta);
     const psbt = result.patched_psbt;
     setPsbtBase64(psbt);
     setMintInputCount(result.inputs.length);
     console.info('[frontend] received psbt', result);
-    return { psbt, inputCount: result.inputs.length };
+    return { psbt, inputCount: result.inputs.length, meta: nextVaultMeta };
   }, [actor, ordinalsAddress, ordinalsPubKey, paymentAddress, paymentPubKey]);
 
   const handleConnectXverse = useCallback(async () => {
@@ -555,16 +556,17 @@ export default function App() {
   const latestPriceDisplay =
     latestVaultPrice != null ? formatUsd(latestVaultPrice, 0) : '--';
 
-  const finalizeSignedPsbt = useCallback(async (signedPsbt: string) => {
+  const finalizeSignedPsbt = useCallback(async (signedPsbt: string, metaOverride?: VaultMeta) => {
     if (!actor) {
       throw new Error('Canister actor not ready.');
     }
-    if (!vaultMeta) {
+    const meta = metaOverride ?? vaultMeta;
+    if (!meta) {
       throw new Error('Missing vault metadata. Build another PSBT and try again.');
     }
 
     const response = (await actor.finalize_mint({
-      vault_id: vaultMeta.vaultId,
+      vault_id: meta.vaultId,
       signed_psbt: signedPsbt,
     })) as { Ok: FinalizeMintOk } | { Err: string };
 
@@ -579,7 +581,7 @@ export default function App() {
     }
   }, [actor, vaultMeta, paymentAccount, loadVaults]);
 
-  const handleSign = useCallback(async (psbtOverride?: string, inputOverride?: number) => {
+  const handleSign = useCallback(async (psbtOverride?: string, inputOverride?: number, metaOverride?: VaultMeta) => {
     const psbtToSign = psbtOverride ?? psbtBase64;
     const inputsToSign = inputOverride ?? mintInputCount;
     if (!psbtToSign) {
@@ -599,7 +601,7 @@ export default function App() {
         autoFinalize: false,
         broadcast: false
       });
-      await finalizeSignedPsbt(signed);
+      await finalizeSignedPsbt(signed, metaOverride);
     } catch (e) {
       console.error('[frontend] signing failed', e);
       setError((e as Error).message);
@@ -620,7 +622,7 @@ export default function App() {
       const built = await buildPsbt();
       setMintInputCount(built.inputCount);
       setPsbtBase64(built.psbt);
-      await handleSign(built.psbt, built.inputCount);
+      await handleSign(built.psbt, built.inputCount, built.meta);
     } catch (e) {
       console.error('[frontend] mint flow failed', e);
       setError((e as Error).message);
