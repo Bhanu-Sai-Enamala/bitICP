@@ -227,7 +227,7 @@ router.post('/finalize', async (req, res) => {
           withdrawable: false,
           lastBtcPriceUsd: vault.btcPriceUsd,
           collateralRatioBps,
-          health: 'pending',
+          health: 'pending' as const,
           txid: txid ?? undefined
         };
         const existing = await vaultStore.getVault(vaultId);
