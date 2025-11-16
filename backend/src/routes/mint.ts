@@ -64,13 +64,9 @@ const mintRequestSchema = z.object({
     })
     .partial()
     .nullish(),
-  inputs_override: z.array(overrideInputSchema).optional(),
-  outputs_override_json: z.string().optional()
-}).transform(({ inputs_override, outputs_override_json, ...rest }) => ({
-  ...rest,
-  inputsOverride: inputs_override,
-  outputsOverrideJson: outputs_override_json
-}));
+  inputsOverride: z.array(overrideInputSchema).optional(),
+  outputsOverrideJson: z.string().optional()
+});
 
 router.use((req, res, next) => {
   if (config.apiKey) {
@@ -84,7 +80,12 @@ router.use((req, res, next) => {
 
 router.post('/build-psbt', async (req, res) => {
   console.info('[mint:build-psbt] raw body', JSON.stringify(req.body, null, 2));
-  const parseResult = mintRequestSchema.safeParse(req.body);
+  const normalizedBody = {
+    ...req.body,
+    inputsOverride: req.body.inputsOverride ?? req.body.inputs_override,
+    outputsOverrideJson: req.body.outputsOverrideJson ?? req.body.outputs_override_json
+  };
+  const parseResult = mintRequestSchema.safeParse(normalizedBody);
   if (!parseResult.success) {
     console.warn('[mint:build-psbt] validation failure', parseResult.error.format());
     return res.status(400).json({
