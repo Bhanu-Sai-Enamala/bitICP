@@ -310,7 +310,9 @@ export default function App() {
         address_type: 'p2wpkh',
         public_key: paymentPubKey
       },
-      amounts: []
+      amounts: [],
+      inputs_override: [],
+      outputs_override_json: []
     })) as BuildPsbtResult;
 
     if ('Err' in response) {

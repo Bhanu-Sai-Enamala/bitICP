@@ -256,34 +256,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForWalletRescan(wallet: string): Promise<void> {
-  const timeoutMs = 5 * 60 * 1000; // 5 minutes safeguard
-  const start = Date.now();
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const info = await runCliJson<{ scanning: boolean | { progress: number; duration: number } }>(
-      ['getwalletinfo'],
-      { wallet }
-    );
-    const scanning = info.scanning;
-    if (scanning === false || scanning === undefined) {
-      console.info('[mintService] wallet rescan complete', { wallet });
-      return;
-    }
-    if (scanning && typeof scanning === 'object') {
-      console.info('[mintService] wallet rescan in progress', {
-        wallet,
-        progress: scanning.progress?.toFixed?.(4) ?? scanning.progress,
-        duration: scanning.duration
-      });
-    }
-    if (Date.now() - start > timeoutMs) {
-      throw new Error('wallet rescan still in progress after waiting 5 minutes');
-    }
-    await sleep(5000);
-  }
-}
-
 export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResult> {
   const wallet = body.payment.address; // funding wallet (watch-only of user's payment key)
   const vaultId = body.vaultId;
@@ -379,7 +351,9 @@ async function buildLegacyMintPsbt(
 
   const paymentImport = await importPaymentDescriptor(wallet, body.payment.publicKey);
   if (paymentImport === 'imported') {
-    await waitForWalletRescan(wallet);
+    console.info('[mintService] payment descriptor imported, continuing without rescan wait', {
+      wallet
+    });
   }
 
   const ordinalsXOnly = xOnly(body.ordinals.publicKey);
@@ -398,7 +372,8 @@ async function buildLegacyMintPsbt(
     add_inputs: true,
     changeAddress: body.payment.address,
     fee_rate: body.feeRate,
-    subtractFeeFromOutputs: []
+    subtractFeeFromOutputs: [],
+    changeType: 'witness_v0_keyhash'
   };
 
   const funded = await runCliJson<WalletCreateFundedPsbtResult>(

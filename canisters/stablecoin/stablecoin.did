@@ -147,6 +147,12 @@ type WithdrawSignResponse = record {
   signature : vec nat8;
 };
 
+type DebugUtxo = record {
+  txid : text;
+  vout : nat32;
+  value_sats : nat64;
+};
+
 service : {
   health: () -> (text) query;
   version: () -> (text) query;
@@ -163,4 +169,5 @@ service : {
   finalize_withdraw: (WithdrawFinalizeRequest) -> (variant { Ok : WithdrawFinalizeResponse; Err : text });
   list_user_vaults: (text) -> (variant { Ok : vec VaultSummary; Err : text });
   sign_withdraw: (WithdrawSignRequest) -> (variant { Ok : WithdrawSignResponse; Err : text });
+  debug_get_utxos: (text) -> (variant { Ok : vec DebugUtxo; Err : text });
 };

@@ -1309,6 +1309,13 @@ struct WithdrawFinalizeResponse {
 }
 
 #[derive(Clone, CandidType, Deserialize, Serialize)]
+struct DebugUtxo {
+    txid: String,
+    vout: u32,
+    value_sats: u64,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BackendMintResponse {
     rune: String,
@@ -1614,9 +1621,10 @@ async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
     let response = backend_http_request(url, HttpMethod::POST, Some(body), headers.clone()).await?;
 
     ic_cdk::println!(
-        "[build_psbt] received response status {:?}, body_len={}",
+        "[build_psbt] received response status {:?}, body_len={}, overrides_sent={:?}",
         response.status,
-        response.body.len()
+        response.body.len(),
+        backend_request.inputs_override.as_ref().map(|v| v.len())
     );
 
     if response.status >= Nat::from(400u32) {
@@ -2041,6 +2049,31 @@ fn transform_http_response(args: TransformArgs) -> HttpResponse {
         headers: vec![],
         body: args.response.body,
     }
+}
+
+#[update]
+async fn debug_get_utxos(address: String) -> Result<Vec<DebugUtxo>, String> {
+    if address.trim().is_empty() {
+        return Err("missing_address".into());
+    }
+    let req = GetUtxosRequest {
+        address,
+        network: bitcoin_network(),
+        filter: None,
+    };
+    let (resp,) = bitcoin_get_utxos(req)
+        .await
+        .map_err(|(code, msg)| format!("bitcoin_get_utxos {:?}: {}", code, msg))?;
+    let utxos = resp
+        .utxos
+        .into_iter()
+        .map(|u| DebugUtxo {
+            txid: txid_bytes_to_hex(&u.outpoint.txid),
+            vout: u.outpoint.vout,
+            value_sats: u.value,
+        })
+        .collect();
+    Ok(utxos)
 }
 
 #[cfg(test)]
