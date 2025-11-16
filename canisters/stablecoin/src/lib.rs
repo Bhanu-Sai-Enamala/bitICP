@@ -31,7 +31,7 @@ const HTTP_CYCLES_COST: u128 = 2_000_000_000_000; // 2T cycles (~0.2T min) per r
 const BACKEND_HTTP_MAX_RETRIES: u8 = 2;
 const XRC_DEFAULT_CYCLES_BUDGET: u128 = 1_000_000_000_000; // start generous; trim after measuring
 const COLLATERAL_FALLBACK_PRICE_USD: f64 = 100_734.10; // Local dev fallback BTC/USD price
-const SCHNORR_PUBLIC_KEY_CYCLES: u128 = 5_000_000_000; // empirical local budget; adjust after benchmarking
+const SCHNORR_PUBLIC_KEY_CYCLES: u128 = 30_000_000_000; // bump budget so IC sign_with_schnorr succeeds on mainnet
 const SCHNORR_KEY_ALGORITHM: &str = "bip340secp256k1";
 // Local replica exposes keys named `dfx_test_key` for ECDSA/Schnorr.
 // Use this for local dev; swap to `key_1` (or production name) when moving to mainnet.

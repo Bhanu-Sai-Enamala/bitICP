@@ -411,9 +411,6 @@ async function fetchVaultOrThrow(vaultId: string): Promise<VaultRecord> {
   if (!record.txid) {
     throw new Error('vault_txid_missing');
   }
-  if (record.withdrawTxId) {
-    throw new Error('vault_already_withdrawn');
-  }
   return record;
 }
 
@@ -544,9 +541,6 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
   if (!record.txid) {
     throw new Error('vault_txid_missing');
   }
-  if (record.withdrawTxId) {
-    throw new Error('vault_already_withdrawn');
-  }
   if (!record.withdrawable && !config.allowUnsafeWithdraw) {
     throw new Error('vault_waiting_confirmations');
   }
@@ -669,7 +663,7 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
   const vaultWallet = `vault-${vaultId}`;
 
   const ordProcessed = await runCliJson<{ psbt: string }>(
-    ['walletprocesspsbt', initialPsbt, 'false'],
+    ['walletprocesspsbt', initialPsbt],
     { wallet: ordWallet }
   );
   console.info('[withdraw] ord walletprocesspsbt complete', {
@@ -680,7 +674,7 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
     psbt: ordProcessed.psbt
   });
   const finalPsbt = await runCliJson<{ psbt: string }>(
-    ['walletprocesspsbt', ordProcessed.psbt, 'false'],
+    ['walletprocesspsbt', ordProcessed.psbt],
     { wallet: vaultWallet }
   );
   console.info('[withdraw] vault walletprocesspsbt complete', {
@@ -884,10 +878,6 @@ export async function finalizeWithdrawPsbt(
     txid = decoded.txid;
     console.info('[withdraw] transaction finalized without broadcast', { vaultId, txid });
   }
-  if (txid) {
-    await vaultStore.setWithdrawTxId(vaultId, txid);
-  }
-
   return {
     vaultId,
     psbt: patchedPsbt,

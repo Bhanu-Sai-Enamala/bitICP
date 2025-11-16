@@ -110,7 +110,7 @@ async function importDescriptor(
   const payload = [
     {
       desc: descriptorWithChecksum,
-      timestamp: "now",
+      timestamp: 0,
       active: false,
       label: 'vault'
     }
@@ -127,7 +127,7 @@ async function importOrdinalsDescriptor(
   const payload = [
     {
       desc: info.descriptor,
-      timestamp: "now",
+      timestamp: 0,
       active: false,
       label: 'ordinals'
     }
