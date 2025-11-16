@@ -36,6 +36,11 @@ const addressBindingSchema = z
     }
   });
 
+const overrideInputSchema = z.object({
+  txid: z.string().min(1),
+  vout: z.number().int().nonnegative()
+});
+
 const mintRequestSchema = z.object({
   rune: z.string().min(1),
   feeRate: z.number().positive(),
@@ -58,8 +63,14 @@ const mintRequestSchema = z.object({
       vaultSats: z.number().int().positive()
     })
     .partial()
-    .nullish()
-});
+    .nullish(),
+  inputs_override: z.array(overrideInputSchema).optional(),
+  outputs_override_json: z.string().optional()
+}).transform(({ inputs_override, outputs_override_json, ...rest }) => ({
+  ...rest,
+  inputsOverride: inputs_override,
+  outputsOverrideJson: outputs_override_json
+}));
 
 router.use((req, res, next) => {
   if (config.apiKey) {
