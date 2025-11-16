@@ -43,6 +43,7 @@ const TX_FEE_BUFFER_SATS: u64 = 3_000;
 const DEFAULT_ORDINALS_SATS: u64 = 1_000;
 const DEFAULT_FEE_SATS: u64 = 1_000;
 const DEFAULT_RUNE_HEX: &str = "00dde905020a00";
+const DEFAULT_WITHDRAW_BURN_HEX: &str = "00dde905020a00";
 const FIXED_MINT_TOKENS: u64 = 10;
 const FIXED_MINT_USD_CENTS: u64 = 1_000;
 const DEFAULT_MIN_CONFIRMATIONS: u32 = 6;
@@ -64,6 +65,8 @@ struct BackendConfig {
     fee_recipient_address: String,
     #[serde(default)]
     rune_op_return_hex: String,
+    #[serde(default)]
+    withdraw_burn_hex: String,
 }
 
 #[derive(Clone, CandidType, Deserialize, Serialize)]
@@ -419,6 +422,7 @@ struct StoredVaultRecord {
     payment_address: String,
     ordinals_address: String,
     vault_address: String,
+    descriptor: String,
     protocol_public_key: String,
     protocol_chain_code: String,
     collateral_sats: u64,
@@ -584,6 +588,7 @@ fn persist_finalized_vault(pending: PendingMintRecord, txid: String, settings: &
         payment_address: vault.payment_address.clone(),
         ordinals_address: vault.ordinals_address.clone(),
         vault_address: vault.vault_address.clone(),
+        descriptor: vault.descriptor.clone(),
         protocol_public_key: vault.protocol_public_key.clone(),
         protocol_chain_code: vault.protocol_chain_code.clone(),
         collateral_sats: vault.collateral_sats,
@@ -607,18 +612,99 @@ fn persist_finalized_vault(pending: PendingMintRecord, txid: String, settings: &
     });
 }
 
-fn stored_vaults_for_payment(payment: &str) -> Vec<VaultSummary> {
+async fn stored_vaults_for_payment(payment: &str) -> Vec<VaultSummary> {
     let target = payment.to_lowercase();
-    let mut rows = VAULTS.with(|store| {
+    let snapshots = VAULTS.with(|store| {
         store
             .borrow()
             .values()
             .filter(|record| record.payment_address.to_lowercase() == target)
-            .map(|record| stored_vault_to_summary(record))
+            .cloned()
             .collect::<Vec<_>>()
     });
+
+    let mut refreshed: Vec<StoredVaultRecord> = Vec::with_capacity(snapshots.len());
+    for record in snapshots {
+        refreshed.push(refresh_stored_vault(record).await);
+    }
+
+    if !refreshed.is_empty() {
+        VAULTS.with(|store| {
+            let mut guard = store.borrow_mut();
+            for record in &refreshed {
+                guard.insert(record.vault_id.clone(), record.clone());
+            }
+        });
+    }
+
+    let mut rows = refreshed
+        .into_iter()
+        .map(|record| stored_vault_to_summary(&record))
+        .collect::<Vec<_>>();
     rows.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     rows
+}
+
+fn stored_vault_by_id(vault_id: &str) -> Option<StoredVaultRecord> {
+    VAULTS.with(|store| store.borrow().get(vault_id).cloned())
+}
+
+async fn refresh_stored_vault(mut record: StoredVaultRecord) -> StoredVaultRecord {
+    let has_txid = record.txid.is_some();
+    if !has_txid || record.vault_address.is_empty() {
+        return record;
+    }
+
+    let request = GetUtxosRequest {
+        address: record.vault_address.clone(),
+        network: bitcoin_network(),
+        filter: None,
+    };
+
+    match bitcoin_get_utxos(request).await {
+        Ok((resp,)) => {
+            if let Some(utxo) = select_vault_utxo(&resp.utxos, record.collateral_sats) {
+                let confirmations = compute_confirmations(resp.tip_height, utxo.height);
+                record.confirmations = confirmations;
+                let is_withdrawn = record.withdraw_txid.is_some();
+                record.withdrawable = !is_withdrawn && confirmations >= record.min_confirmations;
+                if record.health.as_deref() != Some("at_risk") {
+                    record.health = Some(if record.withdrawable {
+                        "confirmed".into()
+                    } else {
+                        "pending".into()
+                    });
+                }
+            } else if record.withdraw_txid.is_some() {
+                record.withdrawable = false;
+            }
+        }
+        Err((code, msg)) => {
+            ic_cdk::println!(
+                "[vaults] bitcoin_get_utxos {:?}: {} (vault_id={})",
+                code,
+                msg,
+                record.vault_id
+            );
+        }
+    }
+
+    record
+}
+
+fn select_vault_utxo<'a>(utxos: &'a [Utxo], collateral_sats: u64) -> Option<&'a Utxo> {
+    utxos
+        .iter()
+        .find(|utxo| utxo.value == collateral_sats)
+        .or_else(|| utxos.first())
+}
+
+fn compute_confirmations(tip_height: u32, utxo_height: u32) -> u32 {
+    if utxo_height == 0 {
+        0
+    } else {
+        tip_height.saturating_sub(utxo_height).saturating_add(1)
+    }
 }
 
 fn stored_vault_to_summary(record: &StoredVaultRecord) -> VaultSummary {
@@ -1772,6 +1858,12 @@ async fn prepare_withdraw(vault_id: String) -> Result<WithdrawPrepareResponse, S
     if config.base_url.is_empty() {
         return Err("backend_not_configured".into());
     }
+    let stored =
+        stored_vault_by_id(&vault_id).ok_or_else(|| "vault_not_found".to_string())?;
+    let mint_txid = stored
+        .txid
+        .clone()
+        .ok_or_else(|| "vault_txid_missing".to_string())?;
     let mut headers = vec![HttpHeader {
         name: "Content-Type".into(),
         value: "application/json".into(),
@@ -1782,8 +1874,34 @@ async fn prepare_withdraw(vault_id: String) -> Result<WithdrawPrepareResponse, S
             value: api_key,
         });
     }
-    let body = serde_json::to_vec(&serde_json::json!({ "vaultId": vault_id }))
-        .map_err(|err| err.to_string())?;
+    let burn_hex = if config.withdraw_burn_hex.is_empty() {
+        DEFAULT_WITHDRAW_BURN_HEX.to_string()
+    } else {
+        config.withdraw_burn_hex.clone()
+    };
+    let vault_payload = serde_json::json!({
+        "vaultAddress": stored.vault_address,
+        "protocolPublicKey": stored.protocol_public_key,
+        "protocolChainCode": stored.protocol_chain_code,
+        "descriptor": stored.descriptor,
+        "collateralSats": stored.collateral_sats,
+        "rune": stored.rune,
+        "feeRate": stored.fee_rate,
+        "ordinalsAddress": stored.ordinals_address,
+        "paymentAddress": stored.payment_address,
+        "mintTokens": stored.mint_tokens.unwrap_or(FIXED_MINT_TOKENS as f64),
+        "mintUsdCents": stored.mint_usd_cents.unwrap_or(FIXED_MINT_USD_CENTS),
+        "btcPriceUsd": stored
+            .last_btc_price_usd
+            .unwrap_or(COLLATERAL_FALLBACK_PRICE_USD),
+        "mintTxId": mint_txid,
+    });
+    let body = serde_json::to_vec(&serde_json::json!({
+        "vaultId": vault_id,
+        "burnMetadata": burn_hex,
+        "vault": vault_payload
+    }))
+    .map_err(|err| err.to_string())?;
     let url = format!("{}/withdraw/prepare", config.base_url.trim_end_matches('/'));
     let response = backend_http_request(url, HttpMethod::POST, Some(body), headers).await?;
     if response.status >= Nat::from(400u32) {
@@ -1968,7 +2086,7 @@ fn decode_digest(bytes: &[u8], field: &str) -> Result<[u8; 32], String> {
 #[update]
 async fn list_user_vaults(payment_address: String) -> Result<Vec<VaultSummary>, String> {
     if canister_vaults_enabled() {
-        return Ok(stored_vaults_for_payment(&payment_address));
+        return Ok(stored_vaults_for_payment(&payment_address).await);
     }
 
     let settings = SETTINGS.with(|s| s.borrow().clone());

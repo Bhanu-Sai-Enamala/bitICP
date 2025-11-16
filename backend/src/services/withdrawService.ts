@@ -2,13 +2,12 @@ import { Transaction, SigHash } from '@scure/btc-signer/transaction';
 import { tapLeafHash } from '@scure/btc-signer/payment';
 import { concatBytes, tagSchnorr } from '@scure/btc-signer/utils';
 import type { TaprootControlBlock } from '@scure/btc-signer/psbt';
-import { config, satsToBtcString } from '../config.js';
+import { config, satsToBtcString, SATS_PER_BTC } from '../config.js';
 import { vaultStore, type VaultRecord } from './vaultStore.js';
 import { runCliJson, runCliRaw } from '../utils/bitcoinCli.js';
 import { sanitizeWalletName } from './mintService.js';
 import { refreshVaultHealth } from './vaultHealth.js';
 
-const DEFAULT_BURN_METADATA = '00dde905020a00';
 const PAYMENT_WITHDRAW_SATS = 1_000; // Base payout 0.00001000 BTC; change gets added on top
 const PSBT_PARSE_OPTIONS = {
   allowUnknownInputs: true,
@@ -30,6 +29,22 @@ interface RawTxInfo {
   }>;
 }
 
+export interface WithdrawVaultPayload {
+  vaultAddress: string;
+  protocolPublicKey: string;
+  protocolChainCode: string;
+  descriptor: string;
+  collateralSats: number;
+  rune: string;
+  feeRate: number;
+  ordinalsAddress: string;
+  paymentAddress: string;
+  mintTokens?: number;
+  mintUsdCents?: number;
+  btcPriceUsd?: number;
+  mintTxId?: string;
+}
+
 interface WalletCreateFundedPsbtResult {
   psbt: string;
   fee: number;
@@ -41,6 +56,55 @@ function matchesAddress(entry: RawTxInfo['vout'][number], address: string): bool
   }
   const list = entry.scriptPubKey.addresses ?? [];
   return list.includes(address);
+}
+
+export async function ensureVaultRecordFromPayload(
+  vaultId: string,
+  payload?: WithdrawVaultPayload
+): Promise<void> {
+  if (!payload) {
+    return;
+  }
+  const existing = await vaultStore.getVault(vaultId);
+  const collateralBtc = payload.collateralSats / SATS_PER_BTC;
+  const btcPrice = payload.btcPriceUsd ?? config.fallbackBtcPriceUsd;
+  const mintedUsd = (payload.mintUsdCents ?? 0) / 100;
+  const collateralUsd = collateralBtc * btcPrice;
+  const collateralRatioBps =
+    mintedUsd > 0 ? Math.round((collateralUsd / mintedUsd) * 10_000) : undefined;
+
+  const record = {
+    vaultId,
+    protocolPublicKey: payload.protocolPublicKey,
+    protocolChainCode: payload.protocolChainCode,
+    vaultAddress: payload.vaultAddress,
+    descriptor: payload.descriptor,
+    collateralSats: payload.collateralSats,
+    metadata: {
+      rune: payload.rune,
+      feeRate: payload.feeRate,
+      ordinalsAddress: payload.ordinalsAddress,
+      paymentAddress: payload.paymentAddress,
+      mintTokens: payload.mintTokens ?? 0,
+      mintUsdCents: payload.mintUsdCents ?? 0
+    },
+    lockedCollateralBtc: collateralBtc,
+    minConfirmations: config.vaultMinConfirmations,
+    confirmations: 0,
+    withdrawable: false,
+    lastBtcPriceUsd: btcPrice,
+    collateralRatioBps,
+    health: 'pending' as const,
+    txid: payload.mintTxId
+  };
+
+  if (!existing) {
+    console.info('[withdraw] vault payload recorded', { vaultId });
+    await vaultStore.recordVault(record);
+  } else {
+    console.info('[withdraw] vault payload updating existing record', { vaultId });
+    await vaultStore.updateVault(vaultId, record);
+  }
 }
 
 async function ensureWalletLoaded(wallet: string): Promise<void> {
@@ -467,6 +531,12 @@ function analyzeVaultPsbt(psbtBase64: string, record: VaultRecord): ParsedPsbt {
 export async function prepareWithdraw(vaultId: string, burnMetadata?: string): Promise<WithdrawPrepareResult> {
   console.info('[withdraw] prepare start', { vaultId, burnMetadataProvided: Boolean(burnMetadata) });
   const stored = await vaultStore.getVault(vaultId);
+  console.info('[withdraw] vault lookup', {
+    vaultId,
+    found: Boolean(stored),
+    hasTxId: Boolean(stored?.txid),
+    storedKeys: stored ? Object.keys(stored) : undefined
+  });
   if (!stored) {
     throw new Error('vault_not_found');
   }
@@ -494,7 +564,7 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
     { txid: record.txid, vout: vaultEntry.n, value: vaultEntry.value },
   ];
 
-  const burnMetadataValue = (burnMetadata ?? DEFAULT_BURN_METADATA).toLowerCase();
+  const burnMetadataValue = (burnMetadata ?? config.withdrawBurnMetadata).toLowerCase();
   const basePayoutBtc = Number(satsToBtcString(PAYMENT_WITHDRAW_SATS));
   let changeAmountBtc = 0;
   const paymentWallet = record.metadata.paymentAddress;

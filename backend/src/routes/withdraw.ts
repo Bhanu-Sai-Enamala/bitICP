@@ -4,7 +4,8 @@ import { config } from '../config.js';
 import {
   prepareWithdraw,
   requestProtocolSignature,
-  finalizeWithdrawPsbt
+  finalizeWithdrawPsbt,
+  ensureVaultRecordFromPayload
 } from '../services/withdrawService.js';
 
 const router = Router();
@@ -22,6 +23,23 @@ router.use((req, res, next) => {
 const prepareSchema = z.object({
   vaultId: z.string().min(1),
   burnMetadata: z.string().optional(),
+  vault: z
+    .object({
+      vaultAddress: z.string().min(1),
+      protocolPublicKey: z.string().min(1),
+      protocolChainCode: z.string().min(1),
+      descriptor: z.string().min(1),
+      collateralSats: z.number().int().nonnegative(),
+      rune: z.string().min(1),
+      feeRate: z.number().positive(),
+      ordinalsAddress: z.string().min(1),
+      paymentAddress: z.string().min(1),
+      mintTokens: z.number().nonnegative().optional(),
+      mintUsdCents: z.number().int().nonnegative().optional(),
+      btcPriceUsd: z.number().positive().optional(),
+      mintTxId: z.string().min(1).optional()
+    })
+    .optional()
 });
 
 router.post('/prepare', async (req, res) => {
@@ -30,6 +48,9 @@ router.post('/prepare', async (req, res) => {
     return res.status(400).json({ error: 'INVALID_REQUEST', details: parsed.error.flatten() });
   }
   try {
+    if (parsed.data.vault) {
+      await ensureVaultRecordFromPayload(parsed.data.vaultId, parsed.data.vault);
+    }
     const result = await prepareWithdraw(parsed.data.vaultId, parsed.data.burnMetadata);
     res.json(result);
   } catch (error: any) {

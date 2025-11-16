@@ -2,8 +2,9 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { buildMintPsbt } from '../services/mintService.js';
 import { MintRequestBody } from '../types.js';
-import { config } from '../config.js';
+import { config, SATS_PER_BTC } from '../config.js';
 import { runCliJson, runCliRaw } from '../utils/bitcoinCli.js';
+import { vaultStore } from '../services/vaultStore.js';
 
 const router = Router();
 
@@ -196,6 +197,55 @@ router.post('/finalize', async (req, res) => {
       console.warn('[mint:finalize] decoderawtransaction failed', {
         message: error?.message
       });
+    }
+
+    if (vault) {
+      try {
+        const mintedUsd = vault.mintUsdCents / 100;
+        const collateralBtc = vault.collateralSats / SATS_PER_BTC;
+        const collateralUsd = collateralBtc * vault.btcPriceUsd;
+        const collateralRatioBps =
+          mintedUsd > 0 ? Math.round((collateralUsd / mintedUsd) * 10_000) : undefined;
+        const record = {
+          vaultId,
+          protocolPublicKey: vault.protocolPublicKey,
+          protocolChainCode: vault.protocolChainCode,
+          vaultAddress: vault.vaultAddress,
+          descriptor: vault.descriptor,
+          collateralSats: vault.collateralSats,
+          metadata: {
+            rune: vault.rune,
+            feeRate: vault.feeRate,
+            ordinalsAddress: vault.ordinalsAddress,
+            paymentAddress: vault.paymentAddress,
+            mintTokens: vault.mintTokens,
+            mintUsdCents: vault.mintUsdCents
+          },
+          lockedCollateralBtc: collateralBtc,
+          minConfirmations: config.vaultMinConfirmations,
+          confirmations: 0,
+          withdrawable: false,
+          lastBtcPriceUsd: vault.btcPriceUsd,
+          collateralRatioBps,
+          health: 'pending',
+          txid: txid ?? undefined
+        };
+        const existing = await vaultStore.getVault(vaultId);
+        if (!existing) {
+          await vaultStore.recordVault(record);
+        } else {
+          await vaultStore.updateVault(vaultId, record);
+        }
+      } catch (error: any) {
+        console.warn('[mint:finalize] failed to persist vault', {
+          vaultId,
+          message: error?.message
+        });
+      }
+    }
+
+    if (txid) {
+      await vaultStore.setTxId(vaultId, txid);
     }
 
     res.json({ vaultId, hex, complete, txid: txid ?? null });
