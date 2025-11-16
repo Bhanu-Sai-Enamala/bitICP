@@ -281,6 +281,11 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
   const overrideInputs = body.inputsOverride;
   const overrideOutputs = body.outputsOverrideJson;
 
+  console.info('[mintService] override payload', {
+    wallet,
+    overrideInputs: overrideInputs?.length ?? 0,
+    hasOutputs: Boolean(overrideOutputs)
+  });
   if (!overrideInputs?.length || !overrideOutputs) {
     if (!config.allowLegacyMint) {
       throw new Error('inputs_override_required');
