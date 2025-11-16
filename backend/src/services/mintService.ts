@@ -279,7 +279,14 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
 
   const resolvedAmounts = resolveAmounts(body.amounts);
   const overrideInputs = body.inputsOverride;
-  const overrideOutputs = body.outputsOverrideJson;
+  let overrideOutputs = body.outputsOverrideJson;
+  if (overrideOutputs) {
+    const parsedOutputs = JSON.parse(overrideOutputs);
+    if (typeof parsedOutputs === 'object' && parsedOutputs !== null) {
+      parsedOutputs.data = config.mintRunestoneData;
+      overrideOutputs = JSON.stringify(parsedOutputs);
+    }
+  }
 
   console.info('[mintService] override payload', {
     wallet,
