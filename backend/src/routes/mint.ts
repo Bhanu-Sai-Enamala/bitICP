@@ -83,6 +83,7 @@ router.use((req, res, next) => {
 });
 
 router.post('/build-psbt', async (req, res) => {
+  console.info('[mint:build-psbt] raw body', JSON.stringify(req.body, null, 2));
   const parseResult = mintRequestSchema.safeParse(req.body);
   if (!parseResult.success) {
     console.warn('[mint:build-psbt] validation failure', parseResult.error.format());
