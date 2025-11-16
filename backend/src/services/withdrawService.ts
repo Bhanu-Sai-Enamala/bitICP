@@ -547,7 +547,7 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
   if (record.withdrawTxId) {
     throw new Error('vault_already_withdrawn');
   }
-  if (!record.withdrawable) {
+  if (!record.withdrawable && !config.allowUnsafeWithdraw) {
     throw new Error('vault_waiting_confirmations');
   }
 
