@@ -24,7 +24,7 @@ export const config = {
   port: Number(env.PORT ?? 3001),
   bitcoinCliPath: env.BITCOIN_CLI_PATH ?? 'bitcoin-cli',
   bitcoinNetworkFlag: env.BITCOIN_NETWORK_FLAG ?? '-testnet4',
-  mintRunestoneData: (env.MINT_RUNESTONE_DATA ?? '148aca0514ad01').toLowerCase(),
+  mintRunestoneData: (env.MINT_RUNESTONE_DATA ?? '14dde9051402').toLowerCase(),
   guardianPublicKey:
     env.SERVER_GUARDIAN_KEY ??
     '03b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1',
