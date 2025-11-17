@@ -357,21 +357,63 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
   let overrideOutputs = body.outputsOverrideJson;
   if (overrideOutputs) {
     const parsedOutputs = JSON.parse(overrideOutputs);
-    if (typeof parsedOutputs === 'object' && parsedOutputs !== null) {
-      const runeKey = Object.keys(parsedOutputs).find(
-        (key) => key === config.mintRunestoneData
-      );
-      if (runeKey) {
-        delete parsedOutputs[runeKey];
+    const flattened = new Map<string, number>();
+    const collect = (entry: Record<string, number | string>) => {
+      for (const [key, value] of Object.entries(entry)) {
+        if (key === 'data' || key === config.mintRunestoneData) continue;
+        if (typeof value === 'number') {
+          flattened.set(key, value);
+        } else if (typeof value === 'string') {
+          const num = Number(value);
+          if (!Number.isNaN(num)) {
+            flattened.set(key, num);
+          }
+        }
       }
-      parsedOutputs.data = config.mintRunestoneData;
-      if (parsedOutputs[config.feeRecipientAddress] === undefined) {
-        parsedOutputs[config.feeRecipientAddress] = Number(
-          satsToBtcString(config.defaults.feeRecipientSats)
-        );
-      }
-      overrideOutputs = JSON.stringify(parsedOutputs);
+    };
+    if (Array.isArray(parsedOutputs)) {
+      parsedOutputs.forEach((item) => {
+        if (item && typeof item === 'object') {
+          collect(item as Record<string, number | string>);
+        }
+      });
+    } else if (parsedOutputs && typeof parsedOutputs === 'object') {
+      collect(parsedOutputs as Record<string, number | string>);
     }
+
+    const takeAmount = (address: string, fallback: number): number => {
+      if (flattened.has(address)) {
+        const amount = flattened.get(address)!;
+        flattened.delete(address);
+        return amount;
+      }
+      return fallback;
+    };
+
+    const orderedOutputs: Record<string, number | string>[] = [];
+    orderedOutputs.push({ data: config.mintRunestoneData });
+    orderedOutputs.push({
+      [body.ordinals.address]: takeAmount(
+        body.ordinals.address,
+        Number(satsToBtcString(resolvedAmounts.ordinalsSats))
+      )
+    });
+    orderedOutputs.push({
+      [config.feeRecipientAddress]: takeAmount(
+        config.feeRecipientAddress,
+        Number(satsToBtcString(config.defaults.feeRecipientSats))
+      )
+    });
+    orderedOutputs.push({
+      [vaultAddress]: takeAmount(
+        vaultAddress,
+        Number(satsToBtcString(resolvedAmounts.vaultSats))
+      )
+    });
+    for (const [address, amount] of flattened.entries()) {
+      orderedOutputs.push({ [address]: amount });
+    }
+    overrideOutputs = JSON.stringify(orderedOutputs);
   }
 
   console.info('[mintService] override payload', {
