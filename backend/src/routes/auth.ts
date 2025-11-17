@@ -100,8 +100,13 @@ router.post('/verify', async (req, res) => {
     return res.status(400).json({ error: 'CHALLENGE_EXPIRED' });
   }
   try {
-    const valid = verifySiwbSignature(challenge.ordinalsAddress, parsed.data.signature, challenge.message);
-    if (!valid) {
+    try {
+      verifySiwbSignature(challenge.ordinalsAddress, parsed.data.signature, challenge.message);
+    } catch (err: any) {
+      console.warn('[auth:verify] signature rejected', {
+        address: challenge.ordinalsAddress,
+        error: err?.message
+      });
       return res.status(400).json({ error: 'INVALID_SIGNATURE' });
     }
     challengeStore.delete(parsed.data.challengeId);

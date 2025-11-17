@@ -90,8 +90,14 @@ function decodeSegwitSignature(signature: string): { sig: Uint8Array; pubkey: Ui
   if (!(sig instanceof Uint8Array || Array.isArray(sig)) || !(pubkey instanceof Uint8Array || Array.isArray(pubkey))) {
     throw new Error('Malformed segwit witness');
   }
+  const sigBytes = new Uint8Array(sig as Uint8Array);
+  const sighashByte = sigBytes[sigBytes.length - 1];
+  let trimmedSig = sigBytes;
+  if ([0x01, 0x02, 0x03, 0x81, 0x82, 0x83].includes(sighashByte)) {
+    trimmedSig = sigBytes.slice(0, -1);
+  }
   return {
-    sig: new Uint8Array(sig as Uint8Array),
+    sig: trimmedSig,
     pubkey: new Uint8Array(pubkey as Uint8Array),
   };
 }
@@ -140,15 +146,19 @@ export function verifySiwbSignature(address: string, signature: string, message:
     const prevScripts = [outputScript];
     const amounts = [0n];
     const sighash = tx.preimageWitnessV1(0, prevScripts, SigHash.DEFAULT, amounts);
-    return schnorr.verify(schnorrSig, sighash, decoded.pubkey);
+    const ok = schnorr.verify(schnorrSig, sighash, decoded.pubkey);
+    if (!ok) throw new Error('Taproot signature mismatch');
+    return true;
   }
 
   if (decoded.type === 'wpkh') {
     const { sig, pubkey } = decodeSegwitSignature(signature);
-    const prevScripts = OutScript.encode(decoded);
-    const sighash = tx.preimageWitnessV0(0, prevScripts, SigHash.ALL, 0n);
+    const prevScript = OutScript.encode(decoded);
+    const sighash = tx.preimageWitnessV0(0, prevScript, SigHash.ALL, 0n);
     const parsedSig = secp256k1.Signature.fromDER(sig);
-    return secp256k1.verify(parsedSig, sighash, pubkey);
+    const ok = secp256k1.verify(parsedSig, sighash, pubkey);
+    if (!ok) throw new Error('Segwit signature mismatch');
+    return true;
   }
 
   throw new Error('Unsupported address type for SIWB');
