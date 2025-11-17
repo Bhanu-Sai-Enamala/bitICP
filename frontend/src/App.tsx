@@ -742,6 +742,10 @@ export default function App() {
       setError('Connect Xverse first.');
       return;
     }
+    if (!authSession) {
+      setError('Sync wallet before minting.');
+      return;
+    }
     setIsLoading(true);
     setError(undefined);
     setMintInputCount(0);
@@ -758,7 +762,7 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [paymentAccount, buildPsbt, handleSign]);
+  }, [paymentAccount, authSession, buildPsbt, handleSign]);
 
   const handleSignWithdraw = useCallback(
     async (jobOverride?: { vaultId: string; psbt: string; inputCount: number }) => {
@@ -962,7 +966,7 @@ export default function App() {
               <div className="mint-actions">
               <button
                 className="btn btn-primary"
-                disabled={isLoading || !paymentAccount}
+                disabled={isLoading || !paymentAccount || !authSession}
                 onClick={handleMintAndSign}
               >
                 {isLoading ? 'Processing…' : mintedButtonLabel}

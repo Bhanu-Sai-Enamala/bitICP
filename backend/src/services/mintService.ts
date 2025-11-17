@@ -51,6 +51,16 @@ const warmedPaymentWallets = new Set<string>();
 const warmedOrdinalWallets = new Set<string>();
 const warmedVaultWallets = new Set<string>();
 
+async function listLoadedWallets(): Promise<Set<string>> {
+  const names = await runCliJson<string[]>(['listwallets']);
+  return new Set(names);
+}
+
+async function listWalletDirectory(): Promise<Set<string>> {
+  const payload = await runCliJson<{ wallets: { name: string }[] }>(['listwalletdir']);
+  return new Set((payload.wallets ?? []).map((entry) => entry.name));
+}
+
 function buildDescriptor(protocolXOnly: string, userCompressed33: string): string {
   const internal = xOnly(config.guardianPublicKey);
   const userX = xOnly(userCompressed33);
@@ -65,42 +75,40 @@ function buildDescriptor(protocolXOnly: string, userCompressed33: string): strin
   return `tr(${internal},{${leafAX},${leafBX}})`;
 }
 
-async function ensureWallet(wallet: string): Promise<boolean> {
+async function ensureWallet(wallet: string): Promise<'loaded' | 'created'> {
+  const loaded = await listLoadedWallets();
+  if (loaded.has(wallet)) {
+    return 'loaded';
+  }
+
+  const existing = await listWalletDirectory();
+  if (!existing.has(wallet)) {
+    await runCliJson<{ name: string }>([
+      'createwallet',
+      wallet,
+      'true',
+      'true',
+      '',
+      'false',
+      'true',
+      'false'
+    ]);
+    console.info('[mintService] wallet created', { wallet });
+  }
+
   try {
     await runCliJson(['loadwallet', wallet]);
-    return false;
   } catch (error: any) {
     const message = (error?.message ?? '').toLowerCase();
     if (
-      !message.includes('wallet does not exist') &&
-      !message.includes('database does not have wallet') &&
-      !message.includes('not found')
+      !message.includes('duplicate -wallet filename specified') &&
+      !message.includes('already loaded')
     ) {
-      if (
-        message.includes('duplicate -wallet filename specified') ||
-        message.includes('already loaded')
-      ) {
-        return false;
-      }
       throw error;
     }
   }
 
-  const result = await runCliJson<{ name: string }>([
-    'createwallet',
-    wallet,
-    'true',
-    'true',
-    '',
-    'false',
-    'true',
-    'false'
-  ]);
-  if (result?.name) {
-    console.info('[mintService] wallet created', { wallet });
-  }
-  await runCliJson(['loadwallet', wallet]);
-  return true;
+  return existing.has(wallet) ? 'loaded' : 'created';
 }
 
 async function getDescriptorInfo(descriptor: string): Promise<DescriptorInfo> {
@@ -503,23 +511,26 @@ export async function warmUserWallets(
   ordinalsAddress: string
 ): Promise<void> {
   const wallet = paymentAddress;
-  await ensureWallet(wallet);
+  const paymentState = await ensureWallet(wallet);
   const ordinalsXOnly = xOnly(ordinalsPubKey);
 
   if (!warmedPaymentWallets.has(paymentAddress)) {
-    const paymentImport = await importPaymentDescriptor(wallet, paymentCompressed33, 'now');
+    const paymentImport = await importPaymentDescriptor(wallet, paymentCompressed33, 0);
     if (paymentImport === 'imported') {
       console.info('[siwb] payment descriptor imported during warmup', { wallet });
     }
-    await importOrdinalsDescriptor(wallet, ordinalsXOnly, 'ordinals', 'now');
+    await importOrdinalsDescriptor(wallet, ordinalsXOnly, 'ordinals', 0);
+    if (paymentState === 'created' || paymentImport === 'imported') {
+      await rescanWallet(wallet, 0);
+    }
     warmedPaymentWallets.add(paymentAddress);
   }
 
   if (!warmedOrdinalWallets.has(ordinalsAddress)) {
     const ordWallet = `ord-${sanitizeWalletName(ordinalsAddress)}`;
-    const ordCreated = await ensureWallet(ordWallet);
+    const ordState = await ensureWallet(ordWallet);
     const ordImport = await importOrdinalsDescriptor(ordWallet, ordinalsXOnly, 'ordinals', 0);
-    if (ordCreated || ordImport === 'imported') {
+    if (ordState === 'created' || ordImport === 'imported') {
       await rescanWallet(ordWallet, 0);
     }
     warmedOrdinalWallets.add(ordinalsAddress);
@@ -529,9 +540,9 @@ export async function warmUserWallets(
   for (const vault of userVaults) {
     if (warmedVaultWallets.has(vault.vaultId)) continue;
     const vaultWallet = `vault-${sanitizeWalletName(vault.vaultId)}`;
-    const created = await ensureWallet(vaultWallet);
+    const vaultState = await ensureWallet(vaultWallet);
     const imported = await importDescriptor(vaultWallet, vault.descriptor, 'vault', 0);
-    if (created || imported === 'imported') {
+    if (vaultState === 'created' || imported === 'imported') {
       await rescanWallet(vaultWallet, 0);
     }
     warmedVaultWallets.add(vault.vaultId);
