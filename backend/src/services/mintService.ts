@@ -358,6 +358,12 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
   if (overrideOutputs) {
     const parsedOutputs = JSON.parse(overrideOutputs);
     if (typeof parsedOutputs === 'object' && parsedOutputs !== null) {
+      const runeKey = Object.keys(parsedOutputs).find(
+        (key) => key === config.mintRunestoneData
+      );
+      if (runeKey) {
+        delete parsedOutputs[runeKey];
+      }
       parsedOutputs.data = config.mintRunestoneData;
       overrideOutputs = JSON.stringify(parsedOutputs);
     }
