@@ -115,13 +115,4 @@ export async function runCliJson<T>(
   }
 }
 
-export async function verifyMessage(
-  address: string,
-  signature: string,
-  message: string
-): Promise<boolean> {
-  const result = await runCliRaw(['verifymessage', address, signature, message]);
-  return result.trim().toLowerCase() === 'true';
-}
-
 export { runCliRaw };

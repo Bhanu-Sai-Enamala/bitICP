@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { config } from '../config.js';
 import { warmUserWallets } from '../services/mintService.js';
-import { verifyMessage } from '../utils/bitcoinCli.js';
+import { verifySiwbSignature } from '../utils/siwbVerifier.js';
 
 const router = Router();
 
@@ -100,11 +100,7 @@ router.post('/verify', async (req, res) => {
     return res.status(400).json({ error: 'CHALLENGE_EXPIRED' });
   }
   try {
-    const valid = await verifyMessage(
-      challenge.ordinalsAddress,
-      parsed.data.signature,
-      challenge.message
-    );
+    const valid = verifySiwbSignature(challenge.ordinalsAddress, parsed.data.signature, challenge.message);
     if (!valid) {
       return res.status(400).json({ error: 'INVALID_SIGNATURE' });
     }
