@@ -125,7 +125,8 @@ router.post('/verify', async (req, res) => {
     await warmUserWallets(
       challenge.paymentAddress,
       challenge.paymentPublicKey,
-      challenge.ordinalsPublicKey
+      challenge.ordinalsPublicKey,
+      challenge.ordinalsAddress
     );
     res.json({
       token,
