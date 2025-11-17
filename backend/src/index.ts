@@ -1,5 +1,4 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
-import cors from 'cors';
 import morgan from 'morgan';
 import { config } from './config.js';
 import mintRouter from './routes/mint.js';
@@ -9,16 +8,17 @@ import authRouter from './routes/auth.js';
 
 const app = express();
 
-app.use(
-  cors({
-    origin: true,
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['content-type', 'x-api-key'],
-    maxAge: 86400
-  })
-);
 app.use(express.json({ limit: '1mb' }));
 app.use(morgan('dev'));
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'content-type,x-api-key');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', network: config.bitcoinNetworkFlag });

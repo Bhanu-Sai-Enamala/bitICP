@@ -1,9 +1,9 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
-import { schnorr } from '@noble/curves/secp256k1';
 import { config } from '../config.js';
 import { warmUserWallets } from '../services/mintService.js';
+import { verifyMessage } from '../utils/bitcoinCli.js';
 
 const router = Router();
 
@@ -16,7 +16,7 @@ const challengeRequestSchema = z.object({
 
 const verifyRequestSchema = z.object({
   challengeId: z.string().uuid(),
-  signature: z.string().regex(/^[0-9a-fA-F]{128}$/, 'signature must be 64-byte hex')
+  signature: z.string().min(1)
 });
 
 type ChallengeRecord = z.infer<typeof challengeRequestSchema> & {
@@ -39,10 +39,6 @@ const SESSION_TTL_MS = 60 * 60 * 1000;
 
 const challengeStore = new Map<string, ChallengeRecord>();
 const sessionStore = new Map<string, SessionRecord>();
-
-function sha256Bytes(message: string): Uint8Array {
-  return crypto.createHash('sha256').update(message, 'utf8').digest();
-}
 
 function cleanupExpired() {
   const now = Date.now();
@@ -104,10 +100,11 @@ router.post('/verify', async (req, res) => {
     return res.status(400).json({ error: 'CHALLENGE_EXPIRED' });
   }
   try {
-    const msgHash = sha256Bytes(challenge.message);
-    const signature = Buffer.from(parsed.data.signature, 'hex');
-    const pubkey = Buffer.from(challenge.ordinalsPublicKey, 'hex');
-    const valid = schnorr.verify(signature, msgHash, pubkey);
+    const valid = await verifyMessage(
+      challenge.ordinalsAddress,
+      parsed.data.signature,
+      challenge.message
+    );
     if (!valid) {
       return res.status(400).json({ error: 'INVALID_SIGNATURE' });
     }

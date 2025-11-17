@@ -122,12 +122,17 @@ export async function signPsbtWithXverse(psbtBase64: string, opts: SignOpts = {}
   return signed;
 }
 
-export async function signMessageWithXverse(message: string, address: string): Promise<string> {
-  log('signMessage (sats-connect)', { address, len: message?.length, NETWORK_NAME });
+export async function signMessageWithXverse(
+  message: string,
+  address: string,
+  protocol?: 'ecdsa' | 'bip322'
+): Promise<string> {
+  log('signMessage (sats-connect)', { address, len: message?.length, NETWORK_NAME, protocol });
   const res = await request('signMessage', {
     address,
     message,
     network: NETWORK_NAME,
+    protocol,
   });
   if (res.status === 'error') {
     log('signMessage error', res.error);

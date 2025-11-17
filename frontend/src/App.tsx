@@ -35,7 +35,6 @@ interface BuildPsbtOk {
 type BuildPsbtResult = BuildPsbtOk | { Err: string };
 
 const SIWB_STORAGE_KEY = 'siwbSession';
-const HEX64_REGEX = /^[0-9a-fA-F]{128}$/;
 
 interface VaultMeta {
   vaultId: string;
@@ -48,42 +47,6 @@ interface VaultMeta {
   feeRate: number;
   ordinalsAddress: string;
   paymentAddress: string;
-}
-
-function base64ToBinary(input: string): string {
-  if (typeof atob === 'function') {
-    return atob(input);
-  }
-  if (typeof globalThis !== 'undefined' && typeof (globalThis as any).Buffer !== 'undefined') {
-    return (globalThis as any).Buffer.from(input, 'base64').toString('binary');
-  }
-  throw new Error('Base64 decoding is not supported in this environment.');
-}
-
-function normalizeSchnorrSignature(sig: string): string {
-  const trimmed = sig?.trim() ?? '';
-  if (!trimmed) {
-    throw new Error('Wallet returned an empty signature.');
-  }
-  const maybeHex = trimmed.startsWith('0x') ? trimmed.slice(2) : trimmed;
-  if (HEX64_REGEX.test(maybeHex)) {
-    return maybeHex.toLowerCase();
-  }
-  try {
-    const normalized = trimmed.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
-    const binary = base64ToBinary(padded);
-    let hex = '';
-    for (let i = 0; i < binary.length; i += 1) {
-      hex += binary.charCodeAt(i).toString(16).padStart(2, '0');
-    }
-    if (!HEX64_REGEX.test(hex)) {
-      throw new Error('Signature incorrect length');
-    }
-    return hex;
-  } catch (err) {
-    throw new Error('Wallet returned an unsupported signature format.');
-  }
 }
 
 type CandidOpt<T> = [] | [T];
@@ -502,11 +465,10 @@ export default function App() {
           throw new Error(challengeJson?.error ?? 'Failed to request SIWB challenge');
         }
         setAuthStatus('Sign the SIWB challenge in Xverse…');
-        const signatureRaw = await signMessageWithXverse(
+        const signature = await signMessageWithXverse(
           challengeJson.challenge,
           ordinalsAcc.address
         );
-        const signature = normalizeSchnorrSignature(signatureRaw);
         setAuthStatus('Verifying wallet signature…');
         const verifyResp = await fetch(`${backendBase}/auth/verify`, {
           method: 'POST',
