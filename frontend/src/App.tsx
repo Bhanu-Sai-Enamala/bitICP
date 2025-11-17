@@ -35,6 +35,7 @@ interface BuildPsbtOk {
 type BuildPsbtResult = BuildPsbtOk | { Err: string };
 
 const SIWB_STORAGE_KEY = 'siwbSession';
+const HEX64_REGEX = /^[0-9a-fA-F]{128}$/;
 
 interface VaultMeta {
   vaultId: string;
@@ -47,6 +48,42 @@ interface VaultMeta {
   feeRate: number;
   ordinalsAddress: string;
   paymentAddress: string;
+}
+
+function base64ToBinary(input: string): string {
+  if (typeof atob === 'function') {
+    return atob(input);
+  }
+  if (typeof globalThis !== 'undefined' && typeof (globalThis as any).Buffer !== 'undefined') {
+    return (globalThis as any).Buffer.from(input, 'base64').toString('binary');
+  }
+  throw new Error('Base64 decoding is not supported in this environment.');
+}
+
+function normalizeSchnorrSignature(sig: string): string {
+  const trimmed = sig?.trim() ?? '';
+  if (!trimmed) {
+    throw new Error('Wallet returned an empty signature.');
+  }
+  const maybeHex = trimmed.startsWith('0x') ? trimmed.slice(2) : trimmed;
+  if (HEX64_REGEX.test(maybeHex)) {
+    return maybeHex.toLowerCase();
+  }
+  try {
+    const normalized = trimmed.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
+    const binary = base64ToBinary(padded);
+    let hex = '';
+    for (let i = 0; i < binary.length; i += 1) {
+      hex += binary.charCodeAt(i).toString(16).padStart(2, '0');
+    }
+    if (!HEX64_REGEX.test(hex)) {
+      throw new Error('Signature incorrect length');
+    }
+    return hex;
+  } catch (err) {
+    throw new Error('Wallet returned an unsupported signature format.');
+  }
 }
 
 type CandidOpt<T> = [] | [T];
@@ -258,7 +295,18 @@ export default function App() {
   const [authSession, setAuthSession] = useState<{ token: string; expiresAt: number } | null>(null);
   const [authStatus, setAuthStatus] = useState<string>();
   const [sessionChecked, setSessionChecked] = useState(false);
-
+  const backendHost = useMemo(() => {
+    if (!backendUrl) return 'not set';
+    try {
+      return new URL(backendUrl).host;
+    } catch {
+      return backendUrl;
+    }
+  }, [backendUrl]);
+  const backendBase = useMemo(() => {
+    if (!backendUrl) return undefined;
+    return backendUrl.endsWith('/') ? backendUrl.slice(0, -1) : backendUrl;
+  }, [backendUrl]);
   useEffect(() => {
     (async () => {
       try {
@@ -397,37 +445,6 @@ export default function App() {
     return { psbt, inputCount: result.inputs.length, meta: nextVaultMeta };
   }, [actor, ordinalsAddress, ordinalsPubKey, paymentAddress, paymentPubKey]);
 
-  const handleConnectXverse = useCallback(async () => {
-    setError(undefined);
-    try {
-      const connection = await connectXverse();
-      setXverseConnection(connection);
-
-      const paymentAcc = connection.addresses.find((entry) => entry.purpose === 'payment');
-      if (paymentAcc) {
-        setPaymentAddress(paymentAcc.address);
-        if (paymentAcc.publicKey) {
-          setPaymentPubKey(paymentAcc.publicKey);
-        }
-      }
-
-      const ordinalsAcc = connection.addresses.find((entry) => entry.purpose === 'ordinals');
-      if (ordinalsAcc) {
-        setOrdinalsAddress(ordinalsAcc.address);
-        if (ordinalsAcc.publicKey) {
-          setOrdinalsPubKey(ordinalsAcc.publicKey);
-        }
-      }
-      if (backendBase) {
-        await authenticateWallet(connection);
-      } else {
-        setAuthStatus('Backend URL not available for SIWB');
-      }
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }, [authenticateWallet, backendBase]);
-
   const handleDisconnectXverse = useCallback(async () => {
     try {
       await disconnectXverse();
@@ -485,10 +502,11 @@ export default function App() {
           throw new Error(challengeJson?.error ?? 'Failed to request SIWB challenge');
         }
         setAuthStatus('Sign the SIWB challenge in Xverse…');
-        const signature = await signMessageWithXverse(
+        const signatureRaw = await signMessageWithXverse(
           challengeJson.challenge,
           ordinalsAcc.address
         );
+        const signature = normalizeSchnorrSignature(signatureRaw);
         setAuthStatus('Verifying wallet signature…');
         const verifyResp = await fetch(`${backendBase}/auth/verify`, {
           method: 'POST',
@@ -550,6 +568,35 @@ export default function App() {
     [actor]
   );
 
+  const handleConnectXverse = useCallback(async () => {
+    setError(undefined);
+    try {
+      const connection = await connectXverse();
+      setXverseConnection(connection);
+
+      const paymentAcc = connection.addresses.find((entry) => entry.purpose === 'payment');
+      if (paymentAcc) {
+        setPaymentAddress(paymentAcc.address);
+        if (paymentAcc.publicKey) {
+          setPaymentPubKey(paymentAcc.publicKey);
+        }
+        await loadVaults(paymentAcc.address);
+      }
+
+      const ordinalsAcc = connection.addresses.find((entry) => entry.purpose === 'ordinals');
+      if (ordinalsAcc) {
+        setOrdinalsAddress(ordinalsAcc.address);
+        if (ordinalsAcc.publicKey) {
+          setOrdinalsPubKey(ordinalsAcc.publicKey);
+        }
+      }
+
+      setAuthStatus('Wallet connected • press Sync to authorize');
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, [loadVaults]);
+
   const watchAddress = useMemo(
     () => paymentAccount?.address ?? paymentAddress,
     [paymentAccount?.address, paymentAddress]
@@ -606,18 +653,6 @@ export default function App() {
   const mintPanelSubtitle = usingFallbackPrice
     ? 'BTC price unavailable. Showing fallback collateral values.'
     : 'Live collateral and fee requirements.';
-  const backendHost = useMemo(() => {
-    if (!backendUrl) return 'not set';
-    try {
-      return new URL(backendUrl).host;
-    } catch {
-      return backendUrl;
-    }
-  }, [backendUrl]);
-  const backendBase = useMemo(() => {
-    if (!backendUrl) return undefined;
-    return backendUrl.endsWith('/') ? backendUrl.slice(0, -1) : backendUrl;
-  }, [backendUrl]);
 
   const sortedVaults = useMemo(
     () => [...vaults].sort((a, b) => a.createdAtMs - b.createdAtMs),
@@ -977,28 +1012,6 @@ export default function App() {
               >
                   Switch to Auction
                 </a>
-              </div>
-            </div>
-
-            <div className="divider" />
-            <div className="section-title">Wallet Inputs</div>
-            <div className="muted" style={{ marginBottom: 12 }}>Paste from Xverse or use your own keys.</div>
-            <div className="field">
-              <label className="label">Ordinals address</label>
-              <input className="input mono" value={ordinalsAddress} onChange={(e) => setOrdinalsAddress(e.target.value)} />
-            </div>
-            <div className="field">
-              <label className="label">Ordinals public key (x-only)</label>
-              <input className="input mono" value={ordinalsPubKey} onChange={(e) => setOrdinalsPubKey(e.target.value)} />
-            </div>
-            <div className="row">
-              <div className="field">
-                <label className="label">Payment address</label>
-                <input className="input mono" value={paymentAddress} onChange={(e) => setPaymentAddress(e.target.value)} />
-              </div>
-              <div className="field">
-                <label className="label">Payment public key</label>
-                <input className="input mono" value={paymentPubKey} onChange={(e) => setPaymentPubKey(e.target.value)} />
               </div>
             </div>
 
