@@ -467,8 +467,7 @@ export default function App() {
         setAuthStatus('Sign the SIWB challenge in Xverse…');
         const signature = await signMessageWithXverse(
           challengeJson.challenge,
-          paymentAcc.address,
-          'ecdsa'
+          paymentAcc.address
         );
         setAuthStatus('Verifying wallet signature…');
         const verifyResp = await fetch(`${backendBase}/auth/verify`, {

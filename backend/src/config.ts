@@ -50,7 +50,8 @@ export const config = {
   vaultMinConfirmations: Number(env.VAULT_MIN_CONFIRMATIONS ?? 6),
   healthAtRiskRatioBps: Number(env.HEALTH_AT_RISK_RATIO_BPS ?? 15000),
   allowLegacyMint: env.ALLOW_LEGACY_MINT === 'true',
-  allowUnsafeWithdraw: env.ALLOW_UNSAFE_WITHDRAW === 'true'
+  allowUnsafeWithdraw: env.ALLOW_UNSAFE_WITHDRAW === 'true',
+  siwbWallet: env.SIWB_VERIFIER_WALLET ?? 'siwb-auth'
 };
 
 export function satsToBtcString(sats: number): string {

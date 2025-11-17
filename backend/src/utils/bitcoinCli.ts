@@ -117,11 +117,48 @@ export async function runCliJson<T>(
 
 export { runCliRaw };
 
+async function descriptorWithChecksum(desc: string): Promise<string> {
+  const info = await runCliJson<{ descriptor: string }>(['getdescriptorinfo', desc]);
+  return info.descriptor;
+}
+
+export async function ensureWalletHasPaymentKey(
+  wallet: string,
+  paymentPublicKey: string
+): Promise<void> {
+  const desc = await descriptorWithChecksum(`wpkh(${paymentPublicKey})`);
+  const payload = JSON.stringify([
+    {
+      desc,
+      timestamp: 'now',
+      active: false,
+      internal: false,
+      watchonly: true
+    }
+  ]);
+  try {
+    const result = await runCliJson<Array<{ success: boolean }>>(
+      ['importdescriptors', payload],
+      { wallet }
+    );
+    if (!result[0]?.success) {
+      throw new Error('Descriptor import rejected');
+    }
+  } catch (err: any) {
+    const msg = String(err?.message ?? '').toLowerCase();
+    if (msg.includes('duplicate') || msg.includes('already have this descriptor')) {
+      return;
+    }
+    throw err;
+  }
+}
+
 export async function verifyMessage(
+  wallet: string,
   address: string,
   signature: string,
   message: string
 ): Promise<boolean> {
-  const result = await runCliRaw(['verifymessage', address, signature, message]);
+  const result = await runCliRaw(['verifymessage', address, signature, message], { wallet });
   return result.trim().toLowerCase() === 'true';
 }

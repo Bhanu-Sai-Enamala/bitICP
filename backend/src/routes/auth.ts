@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { config } from '../config.js';
 import { warmUserWallets } from '../services/mintService.js';
-import { verifyMessage } from '../utils/bitcoinCli.js';
+import { ensureWalletHasPaymentKey, verifyMessage } from '../utils/bitcoinCli.js';
 
 const router = Router();
 
@@ -100,7 +100,9 @@ router.post('/verify', async (req, res) => {
     return res.status(400).json({ error: 'CHALLENGE_EXPIRED' });
   }
   try {
+    await ensureWalletHasPaymentKey(config.siwbWallet, challenge.paymentPublicKey);
     const valid = await verifyMessage(
+      config.siwbWallet,
       challenge.paymentAddress,
       parsed.data.signature,
       challenge.message
