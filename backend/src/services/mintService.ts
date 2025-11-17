@@ -365,6 +365,11 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
         delete parsedOutputs[runeKey];
       }
       parsedOutputs.data = config.mintRunestoneData;
+      if (parsedOutputs[config.feeRecipientAddress] === undefined) {
+        parsedOutputs[config.feeRecipientAddress] = Number(
+          satsToBtcString(config.defaults.feeRecipientSats)
+        );
+      }
       overrideOutputs = JSON.stringify(parsedOutputs);
     }
   }
