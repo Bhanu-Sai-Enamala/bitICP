@@ -567,7 +567,8 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
   ];
 
   const burnMetadataValue = (burnMetadata ?? config.withdrawBurnMetadata).toLowerCase();
-  const basePayoutBtc = Number(satsToBtcString(PAYMENT_WITHDRAW_SATS));
+  const ordinalsPayoutBtc = Number(satsToBtcString(PAYMENT_WITHDRAW_SATS));
+  const collateralPayoutBtc = vaultEntry.value;
   let changeAmountBtc = 0;
   const paymentWallet = record.metadata.paymentAddress;
   try {
@@ -587,10 +588,11 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
           scriptPubKey: vaultEntry.scriptPubKey.hex
         }
       ];
-      const walletOutputs = {
-        data: burnMetadataValue,
-        [record.metadata.paymentAddress]: basePayoutBtc
-      };
+      const walletOutputs = [
+        { data: burnMetadataValue },
+        { [record.metadata.paymentAddress]: ordinalsPayoutBtc },
+        { [record.metadata.paymentAddress]: collateralPayoutBtc }
+      ];
       const walletOptions = {
         includeWatching: true,
         add_inputs: false,
@@ -609,10 +611,13 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
         { wallet: paymentWallet }
       );
       const totalInputsBtc = ordEntry.value + vaultEntry.value;
-      changeAmountBtc = Math.max(totalInputsBtc - basePayoutBtc - funded.fee, 0);
+      changeAmountBtc = Math.max(
+        totalInputsBtc - ordinalsPayoutBtc - collateralPayoutBtc - funded.fee,
+        0
+      );
       console.info('[withdraw] change estimation', {
         vaultId,
-        basePayoutBtc,
+        ordinalsPayoutBtc,
         changeAmountBtc,
         fee: funded.fee,
         inputs: totalInputsBtc
@@ -630,15 +635,16 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
     changeAmountBtc = 0;
   }
 
-  const outputs = {
-    data: burnMetadataValue,
-    [record.metadata.paymentAddress]: Number((basePayoutBtc + changeAmountBtc).toFixed(8)),
-  } as Record<string, string | number>;
+  const outputsArray = [
+    { data: burnMetadataValue },
+    { [record.metadata.paymentAddress]: ordinalsPayoutBtc },
+    { [record.metadata.paymentAddress]: Number((collateralPayoutBtc + changeAmountBtc).toFixed(8)) }
+  ];
 
   const rawTx = await runCliRaw([
     'createrawtransaction',
     JSON.stringify(inputs),
-    JSON.stringify(outputs),
+    JSON.stringify(outputsArray),
   ]);
   console.info('[withdraw] raw transaction created', {
     vaultId,
@@ -646,7 +652,7 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
     rawTxPreview: rawTx.slice(0, 120)
   });
 
-  const patched = patchWithdrawData(rawTx, outputs.data as string);
+  const patched = patchWithdrawData(rawTx, burnMetadataValue);
   console.info('[withdraw] burn metadata patched', {
     vaultId,
     patchedLength: patched.length,
@@ -687,7 +693,7 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
 
   return {
     psbt: finalPsbt.psbt,
-    burnMetadata: outputs.data as string,
+    burnMetadata: burnMetadataValue,
     inputs,
     vaultId,
     ordinalsAddress: record.metadata.ordinalsAddress,
