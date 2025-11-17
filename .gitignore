@@ -18,10 +18,15 @@ target-local/
 # Alternate dfx config roots
 .dfx-config/
 
+
 # Rust
 target/
 **/target/
 Cargo.lock
+
+# Local references (not part of repo)
+ic-siwb/
+icpSchnorrExample/
 
 # DFX / Internet Computer
 .dfx/

@@ -121,3 +121,29 @@ export async function signPsbtWithXverse(psbtBase64: string, opts: SignOpts = {}
   if (!signed) throw new Error('Xverse did not return a signed PSBT.');
   return signed;
 }
+
+export async function signMessageWithXverse(message: string, address: string): Promise<string> {
+  log('signMessage (sats-connect)', { address, len: message?.length, NETWORK_NAME });
+  const res = await request('signMessage', {
+    address,
+    message,
+    network: NETWORK_NAME,
+  });
+  if (res.status === 'error') {
+    log('signMessage error', res.error);
+    if (res.error.code === RpcErrorCode.USER_REJECTION) {
+      throw new Error('Message signing rejected by user.');
+    }
+    throw new Error(res.error.message ?? 'Xverse did not sign the message.');
+  }
+  const signature =
+    res.result?.signature ??
+    res.result?.signedMessage ??
+    res.result?.encodedSignature ??
+    null;
+  if (!signature) {
+    throw new Error('Wallet did not return a signature.');
+  }
+  log('signMessage success', { hasSignature: !!signature });
+  return signature;
+}

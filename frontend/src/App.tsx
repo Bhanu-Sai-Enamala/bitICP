@@ -3,6 +3,7 @@ import { stablecoinActor } from './ic';
 import {
   connectXverse,
   disconnectXverse,
+  signMessageWithXverse,
   signPsbtWithXverse,
   type XverseConnection
 } from './xverse';
@@ -32,6 +33,8 @@ interface BuildPsbtOk {
   };
 }
 type BuildPsbtResult = BuildPsbtOk | { Err: string };
+
+const SIWB_STORAGE_KEY = 'siwbSession';
 
 interface VaultMeta {
   vaultId: string;
@@ -252,6 +255,9 @@ export default function App() {
   const [withdrawInfo, setWithdrawInfo] = useState<string>();
   const [withdrawError, setWithdrawError] = useState<string>();
   const [showWithdrawnVaults, setShowWithdrawnVaults] = useState(false);
+  const [authSession, setAuthSession] = useState<{ token: string; expiresAt: number } | null>(null);
+  const [authStatus, setAuthStatus] = useState<string>();
+  const [sessionChecked, setSessionChecked] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -290,6 +296,50 @@ export default function App() {
     if (!actor) return;
     refreshPreview();
   }, [actor, refreshPreview]);
+
+  useEffect(() => {
+    if (!backendBase) return;
+    if (sessionChecked) return;
+    const stored = localStorage.getItem(SIWB_STORAGE_KEY);
+    if (!stored) {
+      setSessionChecked(true);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(stored);
+      if (!parsed?.token || parsed.expiresAt <= Date.now()) {
+        localStorage.removeItem(SIWB_STORAGE_KEY);
+        setSessionChecked(true);
+        return;
+      }
+      setAuthStatus('Restoring wallet session…');
+      fetch(`${backendBase}/auth/session/${parsed.token}`)
+        .then(async (resp) => {
+          if (!resp.ok) {
+            localStorage.removeItem(SIWB_STORAGE_KEY);
+            setAuthSession(null);
+            setAuthStatus(undefined);
+            return;
+          }
+          const data = await resp.json();
+          setAuthSession({ token: data.token ?? parsed.token, expiresAt: data.expiresAt ?? parsed.expiresAt });
+          const expiryLabel = new Date((data.expiresAt ?? parsed.expiresAt)).toLocaleTimeString();
+          setAuthStatus(`Wallet synced • session expires ${expiryLabel}`);
+        })
+        .catch((err) => {
+          console.warn('[frontend] restore session failed', err);
+          localStorage.removeItem(SIWB_STORAGE_KEY);
+          setAuthSession(null);
+          setAuthStatus(undefined);
+        })
+        .finally(() => {
+          setSessionChecked(true);
+        });
+    } catch {
+      localStorage.removeItem(SIWB_STORAGE_KEY);
+      setSessionChecked(true);
+    }
+  }, [backendBase, sessionChecked]);
 
   const buildPsbt = useCallback(async () => {
     if (!actor) {
@@ -368,10 +418,15 @@ export default function App() {
           setOrdinalsPubKey(ordinalsAcc.publicKey);
         }
       }
+      if (backendBase) {
+        await authenticateWallet(connection);
+      } else {
+        setAuthStatus('Backend URL not available for SIWB');
+      }
     } catch (e) {
       setError((e as Error).message);
     }
-  }, []);
+  }, [authenticateWallet, backendBase]);
 
   const handleDisconnectXverse = useCallback(async () => {
     try {
@@ -381,6 +436,10 @@ export default function App() {
       setPendingWithdraw(null);
       setWithdrawInfo(undefined);
       setWithdrawError(undefined);
+      setAuthSession(null);
+      setAuthStatus(undefined);
+      localStorage.removeItem(SIWB_STORAGE_KEY);
+      setSessionChecked(false);
     }
   }, []);
 
@@ -391,6 +450,75 @@ export default function App() {
   const ordinalsAccount = useMemo(
     () => xverseConnection?.addresses?.find((entry) => entry.purpose === 'ordinals'),
     [xverseConnection]
+  );
+
+  const authenticateWallet = useCallback(
+    async (connection: XverseConnection) => {
+      if (!backendBase) {
+        setAuthStatus('Backend URL not configured');
+        return;
+      }
+      const paymentAcc = connection.addresses.find((entry) => entry.purpose === 'payment');
+      const ordinalsAcc = connection.addresses.find((entry) => entry.purpose === 'ordinals');
+      if (!paymentAcc || !ordinalsAcc) {
+        setAuthStatus('Missing payment or ordinals address from wallet');
+        return;
+      }
+      if (!paymentAcc.publicKey || !ordinalsAcc.publicKey) {
+        setAuthStatus('Wallet did not provide public keys');
+        return;
+      }
+      try {
+        setAuthStatus('Preparing SIWB challenge…');
+        const challengeResp = await fetch(`${backendBase}/auth/challenge`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ordinalsAddress: ordinalsAcc.address,
+            ordinalsPublicKey: ordinalsAcc.publicKey,
+            paymentAddress: paymentAcc.address,
+            paymentPublicKey: paymentAcc.publicKey
+          })
+        });
+        const challengeJson = await challengeResp.json();
+        if (!challengeResp.ok) {
+          throw new Error(challengeJson?.error ?? 'Failed to request SIWB challenge');
+        }
+        setAuthStatus('Sign the SIWB challenge in Xverse…');
+        const signature = await signMessageWithXverse(
+          challengeJson.challenge,
+          ordinalsAcc.address
+        );
+        setAuthStatus('Verifying wallet signature…');
+        const verifyResp = await fetch(`${backendBase}/auth/verify`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            challengeId: challengeJson.challengeId,
+            signature
+          })
+        });
+        const verifyJson = await verifyResp.json();
+        if (!verifyResp.ok) {
+          throw new Error(verifyJson?.error ?? 'SIWB verification failed');
+        }
+        const sessionPayload = {
+          token: verifyJson.token,
+          expiresAt: verifyJson.expiresAt
+        };
+        setAuthSession(sessionPayload);
+        localStorage.setItem(SIWB_STORAGE_KEY, JSON.stringify(sessionPayload));
+        const expiryLabel = new Date(sessionPayload.expiresAt).toLocaleTimeString();
+        setAuthStatus(`Wallet synced • session expires ${expiryLabel}`);
+      } catch (err) {
+        console.error('[frontend] siwb failed', err);
+        setAuthStatus(undefined);
+        setAuthSession(null);
+        localStorage.removeItem(SIWB_STORAGE_KEY);
+        setError((err as Error).message);
+      }
+    },
+    [backendBase]
   );
 
   const loadVaults = useCallback(
@@ -485,6 +613,10 @@ export default function App() {
     } catch {
       return backendUrl;
     }
+  }, [backendUrl]);
+  const backendBase = useMemo(() => {
+    if (!backendUrl) return undefined;
+    return backendUrl.endsWith('/') ? backendUrl.slice(0, -1) : backendUrl;
   }, [backendUrl]);
 
   const sortedVaults = useMemo(
@@ -743,6 +875,16 @@ export default function App() {
           ) : (
             <button className="btn btn-outline" onClick={handleDisconnectXverse}>Disconnect</button>
           )}
+          {xverseConnection && backendBase && (
+            <button
+              className="btn btn-small"
+              style={{ marginLeft: 8 }}
+              onClick={() => authenticateWallet(xverseConnection)}
+            >
+              Sync Wallet
+            </button>
+          )}
+          {authStatus && <div className="muted" style={{ marginTop: 6 }}>{authStatus}</div>}
         </div>
       </header>
 

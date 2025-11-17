@@ -428,3 +428,18 @@ async function buildLegacyMintPsbt(
     paymentAddress: body.payment.address
   };
 }
+
+export async function warmUserWallets(
+  paymentAddress: string,
+  paymentCompressed33: string,
+  ordinalsPubKey: string
+): Promise<void> {
+  const wallet = paymentAddress;
+  await ensureWallet(wallet);
+  const paymentImport = await importPaymentDescriptor(wallet, paymentCompressed33);
+  if (paymentImport === 'imported') {
+    console.info('[siwb] payment descriptor imported during warmup', { wallet });
+  }
+  const ordinalsXOnly = xOnly(ordinalsPubKey);
+  await importOrdinalsDescriptor(wallet, ordinalsXOnly);
+}

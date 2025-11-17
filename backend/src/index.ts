@@ -4,6 +4,7 @@ import { config } from './config.js';
 import mintRouter from './routes/mint.js';
 import vaultRouter from './routes/vaults.js';
 import withdrawRouter from './routes/withdraw.js';
+import authRouter from './routes/auth.js';
 
 const app = express();
 
@@ -23,6 +24,7 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', network: config.bitcoinNetworkFlag });
 });
 
+app.use('/auth', authRouter);
 app.use('/mint', mintRouter);
 app.use('/vaults', vaultRouter);
 app.use('/withdraw', withdrawRouter);
