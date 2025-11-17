@@ -126,6 +126,12 @@ export function verifySiwbSignature(address: string, signature: string, message:
   const decoded = Address(network).decode(address);
   const outputScript = OutScript.encode(decoded);
   const messageHash = bip322Hash(message);
+  console.debug('[siwb] verify start', {
+    address,
+    addressType: decoded.type,
+    signatureLength: signature.length,
+    network: network.bech32
+  });
   const txToSpend = buildTxToSpend(messageHash, outputScript);
   const spendHashLE = txidBytes(txToSpend);
 
@@ -151,11 +157,14 @@ export function verifySiwbSignature(address: string, signature: string, message:
 
   if (decoded.type === 'tr') {
     const schnorrSig = decodeTaprootSignature(signature);
+    console.debug('[siwb] taproot witness parsed', { schnorrSigHex: Buffer.from(schnorrSig).toString('hex') });
     const prevScripts = [outputScript];
     const amounts = [0n];
     const sighash = tx.preimageWitnessV1(0, prevScripts, SigHash.DEFAULT, amounts);
+    console.debug('[siwb] taproot sighash', { sighash: Buffer.from(sighash).toString('hex') });
     const ok = schnorr.verify(schnorrSig, sighash, decoded.pubkey);
     if (!ok) throw new Error('Taproot signature mismatch');
+    console.debug('[siwb] taproot verification ok');
     return true;
   }
 
@@ -163,9 +172,11 @@ export function verifySiwbSignature(address: string, signature: string, message:
     const { sig, pubkey } = decodeSegwitSignature(signature);
     const prevScript = OutScript.encode(decoded);
     const sighash = tx.preimageWitnessV0(0, prevScript, SigHash.ALL, 0n);
+    console.debug('[siwb] segwit sighash', { sighash: Buffer.from(sighash).toString('hex') });
     const parsedSig = secp256k1.Signature.fromDER(sig);
     const ok = secp256k1.verify(parsedSig, sighash, pubkey);
     if (!ok) throw new Error('Segwit signature mismatch');
+    console.debug('[siwb] segwit verification ok');
     return true;
   }
 
