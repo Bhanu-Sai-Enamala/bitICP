@@ -122,12 +122,14 @@ router.post('/verify', async (req, res) => {
       expiresAt: createdAt + SESSION_TTL_MS
     };
     sessionStore.set(token, session);
-    await warmUserWallets(
+    warmUserWallets(
       challenge.paymentAddress,
       challenge.paymentPublicKey,
       challenge.ordinalsPublicKey,
       challenge.ordinalsAddress
-    );
+    ).catch((err) => {
+      console.warn('[auth:verify] wallet warmup failed', { message: err?.message });
+    });
     res.json({
       token,
       expiresAt: session.expiresAt,

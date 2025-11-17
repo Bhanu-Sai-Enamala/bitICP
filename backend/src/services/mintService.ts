@@ -47,6 +47,10 @@ export function sanitizeWalletName(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
+const warmedPaymentWallets = new Set<string>();
+const warmedOrdinalWallets = new Set<string>();
+const warmedVaultWallets = new Set<string>();
+
 function buildDescriptor(protocolXOnly: string, userCompressed33: string): string {
   const internal = xOnly(config.guardianPublicKey);
   const userX = xOnly(userCompressed33);
@@ -118,11 +122,20 @@ async function importDescriptor(
       label
     }
   ];
-  const result = await runCliJson<ImportDescriptorResultItem[]>(
-    ['importdescriptors', JSON.stringify(payload)],
-    { wallet }
-  );
-  return interpretImportResult(result);
+  try {
+    const result = await runCliJson<ImportDescriptorResultItem[]>(
+      ['importdescriptors', JSON.stringify(payload)],
+      { wallet }
+    );
+    return interpretImportResult(result);
+  } catch (error: any) {
+    const message = (error?.message ?? '').toLowerCase();
+    if (message.includes('wallet is currently rescanning')) {
+      console.info('[mintService] descriptor import skipped (wallet rescanning)', { wallet, label });
+      return 'duplicate';
+    }
+    throw error;
+  }
 }
 
 async function importOrdinalsDescriptor(
@@ -141,11 +154,20 @@ async function importOrdinalsDescriptor(
       label
     }
   ];
-  const result = await runCliJson<ImportDescriptorResultItem[]>(
-    ['importdescriptors', JSON.stringify(payload)],
-    { wallet }
-  );
-  return interpretImportResult(result);
+  try {
+    const result = await runCliJson<ImportDescriptorResultItem[]>(
+      ['importdescriptors', JSON.stringify(payload)],
+      { wallet }
+    );
+    return interpretImportResult(result);
+  } catch (error: any) {
+    const message = (error?.message ?? '').toLowerCase();
+    if (message.includes('wallet is currently rescanning')) {
+      console.info('[mintService] ordinals import skipped (wallet rescanning)', { wallet });
+      return 'duplicate';
+    }
+    throw error;
+  }
 }
 
 async function rescanWallet(wallet: string, startHeight = 0): Promise<void> {
@@ -204,11 +226,20 @@ async function importPaymentDescriptor(
       label: 'user-payment'
     }
   ];
-  const result = await runCliJson<ImportDescriptorResultItem[]>(
-    ['importdescriptors', JSON.stringify(payload)],
-    { wallet }
-  );
-  return interpretImportResult(result);
+  try {
+    const result = await runCliJson<ImportDescriptorResultItem[]>(
+      ['importdescriptors', JSON.stringify(payload)],
+      { wallet }
+    );
+    return interpretImportResult(result);
+  } catch (error: any) {
+    const message = (error?.message ?? '').toLowerCase();
+    if (message.includes('wallet is currently rescanning')) {
+      console.info('[mintService] payment import skipped (wallet rescanning)', { wallet });
+      return 'duplicate';
+    }
+    throw error;
+  }
 }
 
 async function deriveVaultAddress(descriptorWithChecksum: string): Promise<string> {
@@ -473,27 +504,36 @@ export async function warmUserWallets(
 ): Promise<void> {
   const wallet = paymentAddress;
   await ensureWallet(wallet);
-  const paymentImport = await importPaymentDescriptor(wallet, paymentCompressed33, 'now');
-  if (paymentImport === 'imported') {
-    console.info('[siwb] payment descriptor imported during warmup', { wallet });
-  }
   const ordinalsXOnly = xOnly(ordinalsPubKey);
-  await importOrdinalsDescriptor(wallet, ordinalsXOnly, 'ordinals', 'now');
 
-  const ordWallet = `ord-${sanitizeWalletName(ordinalsAddress)}`;
-  const ordCreated = await ensureWallet(ordWallet);
-  const ordImport = await importOrdinalsDescriptor(ordWallet, ordinalsXOnly, 'ordinals', 0);
-  if (ordCreated || ordImport === 'imported') {
-    await rescanWallet(ordWallet, 0);
+  if (!warmedPaymentWallets.has(paymentAddress)) {
+    const paymentImport = await importPaymentDescriptor(wallet, paymentCompressed33, 'now');
+    if (paymentImport === 'imported') {
+      console.info('[siwb] payment descriptor imported during warmup', { wallet });
+    }
+    await importOrdinalsDescriptor(wallet, ordinalsXOnly, 'ordinals', 'now');
+    warmedPaymentWallets.add(paymentAddress);
+  }
+
+  if (!warmedOrdinalWallets.has(ordinalsAddress)) {
+    const ordWallet = `ord-${sanitizeWalletName(ordinalsAddress)}`;
+    const ordCreated = await ensureWallet(ordWallet);
+    const ordImport = await importOrdinalsDescriptor(ordWallet, ordinalsXOnly, 'ordinals', 0);
+    if (ordCreated || ordImport === 'imported') {
+      await rescanWallet(ordWallet, 0);
+    }
+    warmedOrdinalWallets.add(ordinalsAddress);
   }
 
   const userVaults = await vaultStore.listVaultsByPayment(paymentAddress);
   for (const vault of userVaults) {
+    if (warmedVaultWallets.has(vault.vaultId)) continue;
     const vaultWallet = `vault-${sanitizeWalletName(vault.vaultId)}`;
     const created = await ensureWallet(vaultWallet);
     const imported = await importDescriptor(vaultWallet, vault.descriptor, 'vault', 0);
     if (created || imported === 'imported') {
       await rescanWallet(vaultWallet, 0);
     }
+    warmedVaultWallets.add(vault.vaultId);
   }
 }
