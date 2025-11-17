@@ -61,6 +61,23 @@ function buildTxToSpend(messageHash: Uint8Array, outputScript: Uint8Array): Uint
   return concatBytes(...parts);
 }
 
+function buildTxToSign(prevTxHashLE: Uint8Array): Uint8Array {
+  const parts: Uint8Array[] = [];
+  parts.push(new Uint8Array(4)); // version
+  parts.push(Uint8Array.of(0x01)); // inputs
+  parts.push(prevTxHashLE); // prev txid (little endian)
+  const index = new Uint8Array(4);
+  parts.push(index); // vout 0
+  parts.push(Uint8Array.of(0x00)); // empty scriptsig
+  parts.push(Uint8Array.of(0x00)); // sequence 0
+  parts.push(Uint8Array.of(0x01)); // outputs
+  parts.push(new Uint8Array(8)); // value 0
+  parts.push(Uint8Array.of(0x01)); // script len
+  parts.push(Uint8Array.of(OP.RETURN));
+  parts.push(new Uint8Array(4)); // locktime
+  return concatBytes(...parts);
+}
+
 function decodeBase64(signature: string): Uint8Array {
   let normalized = signature.trim().replace(/-/g, '+').replace(/_/g, '/');
   while (normalized.length % 4 !== 0) {
@@ -130,29 +147,23 @@ export function verifySiwbSignature(address: string, signature: string, message:
     address,
     addressType: decoded.type,
     signatureLength: signature.length,
-    network: network.bech32
+    network: network.bech32,
+    outputScript: Buffer.from(outputScript).toString('hex'),
+    signatureBase64: signature
   });
   const txToSpend = buildTxToSpend(messageHash, outputScript);
   const spendHashLE = txidBytes(txToSpend);
 
-  const tx = new Transaction({
+  const txRaw = buildTxToSign(spendHashLE);
+  const tx = Transaction.fromRaw(txRaw, {
+    allowUnknownInputs: true,
+    allowUnknownOutputs: true,
     version: 0,
     lockTime: 0,
-    allowUnknownOutputs: true,
-    allowUnknownInputs: true,
   });
-
-  tx.addInput({
-    txid: spendHashLE,
-    index: 0,
-    sequence: 0,
+  tx.updateInput(0, {
     witnessUtxo: { script: outputScript, amount: 0n },
     ...(decoded.type === 'tr' ? { tapInternalKey: decoded.pubkey } : {}),
-  });
-
-  tx.addOutput({
-    amount: 0n,
-    script: Script.encode([OP.RETURN]),
   });
 
   if (decoded.type === 'tr') {
