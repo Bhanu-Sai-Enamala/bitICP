@@ -36,17 +36,24 @@ function networkForAddress(address: string) {
 
 function decodeSignature(signatureBase64: string) {
   const raw = Buffer.from(signatureBase64, 'base64');
-  if (raw.length !== 65) {
-    throw new Error('Invalid signature length');
+  if (raw.length === 65) {
+    const header = raw[0];
+    if (header >= 27 && header <= 34) {
+      const recovery = (header - 27) & 3;
+      const compressed = !!((header - 27) & 4);
+      const compact = raw.subarray(1);
+      return { recovery, compressed, compact };
+    }
+    // Fallback for header defaults (e.g. 0x01 when wallet strips format byte)
+    const recovery = 0;
+    const compressed = true;
+    const compact = raw.subarray(1);
+    return { recovery, compressed, compact };
   }
-  const header = raw[0];
-  if (header < 27 || header > 34) {
-    throw new Error('Invalid signature header byte');
-  }
-  const recovery = (header - 27) & 3;
-  const compressed = !!((header - 27) & 4);
-  const compact = raw.subarray(1);
-  return { recovery, compressed, compact }; 
+  const compact = raw.subarray(0, 64);
+  const recovery = 0;
+  const compressed = true;
+  return { recovery, compressed, compact };
 }
 
 export function verifyPaymentMessage(
