@@ -61,8 +61,16 @@ function buildTxToSpend(messageHash: Uint8Array, outputScript: Uint8Array): Uint
   return concatBytes(...parts);
 }
 
+function decodeBase64(signature: string): Uint8Array {
+  let normalized = signature.trim().replace(/-/g, '+').replace(/_/g, '/');
+  while (normalized.length % 4 !== 0) {
+    normalized += '=';
+  }
+  return Uint8Array.from(Buffer.from(normalized, 'base64'));
+}
+
 function decodeTaprootSignature(signature: string): Uint8Array {
-  const raw = Buffer.from(signature, 'base64');
+  const raw = decodeBase64(signature);
   if (!raw.length) throw new Error('Empty signature');
   const scriptBytes = raw.slice(1); // strip stack element count
   const ops = Script.decode(Uint8Array.from(scriptBytes));
@@ -78,7 +86,7 @@ function decodeTaprootSignature(signature: string): Uint8Array {
 }
 
 function decodeSegwitSignature(signature: string): { sig: Uint8Array; pubkey: Uint8Array } {
-  const raw = Buffer.from(signature, 'base64');
+  const raw = decodeBase64(signature);
   if (!raw.length) throw new Error('Empty segwit signature');
   const scriptBytes = raw.slice(1);
   const ops = Script.decode(Uint8Array.from(scriptBytes));
