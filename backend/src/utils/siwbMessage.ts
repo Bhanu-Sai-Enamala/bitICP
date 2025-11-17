@@ -34,26 +34,38 @@ function networkForAddress(address: string) {
   return address.toLowerCase().startsWith('bc') ? NETWORK : TEST_NETWORK;
 }
 
-function decodeSignature(signatureBase64: string) {
+type RecoveryHint = { recovery: number; compressed: boolean };
+
+function decodeSignature(signatureBase64: string): { compact: Uint8Array; hints: RecoveryHint[] } {
   const raw = Buffer.from(signatureBase64, 'base64');
-  if (raw.length === 65) {
-    const header = raw[0];
-    if (header >= 27 && header <= 34) {
-      const recovery = (header - 27) & 3;
-      const compressed = !!((header - 27) & 4);
-      const compact = raw.subarray(1);
-      return { recovery, compressed, compact };
-    }
-    // Fallback for header defaults (e.g. 0x01 when wallet strips format byte)
-    const recovery = 0;
-    const compressed = true;
-    const compact = raw.subarray(1);
-    return { recovery, compressed, compact };
+  if (raw.length < 64) {
+    throw new Error('Invalid signature length');
   }
-  const compact = raw.subarray(0, 64);
-  const recovery = 0;
-  const compressed = true;
-  return { recovery, compressed, compact };
+  let header: number | undefined;
+  let compact: Uint8Array;
+  if (raw.length >= 65) {
+    header = raw[raw.length - 65];
+    compact = raw.subarray(raw.length - 64);
+  } else {
+    compact = raw;
+  }
+
+  const hints: RecoveryHint[] = [];
+  if (header !== undefined) {
+    const value = header - 27;
+    if (value >= 0 && value <= 15) {
+      const recovery = value & 3;
+      const compressed = !!(value & 4);
+      hints.push({ recovery, compressed });
+    }
+  }
+  if (!hints.length) {
+    for (let recovery = 0; recovery < 4; recovery += 1) {
+      hints.push({ recovery, compressed: true });
+      hints.push({ recovery, compressed: false });
+    }
+  }
+  return { compact, hints };
 }
 
 export function verifyPaymentMessage(
@@ -66,16 +78,21 @@ export function verifyPaymentMessage(
   if (decoded.type !== 'wpkh' && decoded.type !== 'pkh') {
     throw new Error('Unsupported address type for ECDSA verification');
   }
-  const { recovery, compressed, compact } = decodeSignature(signatureBase64);
   const msgHash = bitcoinMessageHash(message);
-  const sig = secp256k1.Signature.fromCompact(compact).addRecoveryBit(recovery);
-  const pubkey = sig.recoverPublicKey(msgHash).toRawBytes(compressed);
-  const derivedHash = hash160(pubkey);
-  if (decoded.type === 'wpkh') {
-    return Buffer.from(derivedHash).equals(Buffer.from(decoded.hash));
-  }
-  if (decoded.type === 'pkh') {
-    return Buffer.from(derivedHash).equals(Buffer.from(decoded.hash));
+  const { compact, hints } = decodeSignature(signatureBase64);
+  for (const hint of hints) {
+    try {
+      const sig = secp256k1.Signature.fromCompact(compact).addRecoveryBit(hint.recovery);
+      const pubkey = sig.recoverPublicKey(msgHash).toRawBytes(hint.compressed);
+      const derivedHash = hash160(pubkey);
+      if (decoded.type === 'wpkh' || decoded.type === 'pkh') {
+        if (Buffer.from(derivedHash).equals(Buffer.from(decoded.hash))) {
+          return true;
+        }
+      }
+    } catch {
+      continue;
+    }
   }
   return false;
 }
