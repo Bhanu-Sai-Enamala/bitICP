@@ -637,8 +637,11 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
 
   const outputsArray = [
     { data: burnMetadataValue },
-    { [record.metadata.paymentAddress]: ordinalsPayoutBtc },
-    { [record.metadata.paymentAddress]: Number((collateralPayoutBtc + changeAmountBtc).toFixed(8)) }
+    {
+      [record.metadata.paymentAddress]: Number(
+        (ordinalsPayoutBtc + collateralPayoutBtc + changeAmountBtc).toFixed(8)
+      )
+    }
   ];
 
   const rawTx = await runCliRaw([
