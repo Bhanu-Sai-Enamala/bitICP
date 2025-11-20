@@ -43,6 +43,10 @@ type MintResult = record {
   vault_id : text;
   protocol_public_key : text;
   protocol_chain_code : text;
+  oracle_public_key : text;
+  oracle_chain_code : text;
+  liquidation_public_key : text;
+  liquidation_chain_code : text;
   descriptor : text;
   original_psbt : text;
   patched_psbt : text;
@@ -96,6 +100,45 @@ type VaultSummary = record {
   health : opt text;
 };
 
+type AuctionSummary = record {
+  vault_id : text;
+  payment_address : text;
+  ordinals_address : text;
+  vault_address : text;
+  claim_price_sats : nat64;
+  offer_ratio_bps : nat32;
+  started_at : nat64;
+  treasury_deadline : nat64;
+  claimed : bool;
+};
+
+type AuctionClaimRequest = record {
+  vault_id : text;
+  ordinals : AddressBinding;
+  payment : AddressBinding;
+};
+
+type AuctionClaimResponse = record {
+  vault_id : text;
+  psbt : text;
+  burn_metadata : text;
+  claim_price_sats : nat64;
+  ordinals_address : text;
+  payment_address : text;
+};
+
+type AuctionFinalizeRequest = record {
+  vault_id : text;
+  psbt : text;
+  claimant_payment_address : text;
+};
+
+type AuctionFinalizeResponse = record {
+  vault_id : text;
+  txid : opt text;
+  hex : text;
+};
+
 type BuildPsbtRequest = record {
   rune : text;
   fee_rate : float64;
@@ -147,6 +190,12 @@ type WithdrawSignResponse = record {
   signature : vec nat8;
 };
 
+type DebugUtxo = record {
+  txid : text;
+  vout : nat32;
+  value_sats : nat64;
+};
+
 service : {
   health: () -> (text) query;
   version: () -> (text) query;
@@ -154,13 +203,21 @@ service : {
   get_backend_config: () -> (BackendConfig) query;
   get_collateral_preview: () -> (variant { Ok : CollateralPreview; Err : text });
   set_backend_config: (text, opt text) -> ();
+  set_backend_broadcast_mode: (bool, bool) -> ();
+  set_local_testing_mode: (bool) -> ();
   set_fee_config: (nat64, nat64, text, text) -> ();
   set_protocol_keys: (text, text, text) -> ();
   set_schnorr_key: (text) -> (variant { Ok : null; Err : text });
+  set_xrc_config: (principal) -> ();
   build_psbt: (BuildPsbtRequest) -> (variant { Ok : MintResponse; Err : text });
   finalize_mint: (FinalizeMintRequest) -> (variant { Ok : FinalizeMintResponse; Err : text });
   prepare_withdraw: (text) -> (variant { Ok : WithdrawPrepareResponse; Err : text });
   finalize_withdraw: (WithdrawFinalizeRequest) -> (variant { Ok : WithdrawFinalizeResponse; Err : text });
   list_user_vaults: (text) -> (variant { Ok : vec VaultSummary; Err : text });
   sign_withdraw: (WithdrawSignRequest) -> (variant { Ok : WithdrawSignResponse; Err : text });
+  force_start_auction: (text) -> (variant { Ok : AuctionSummary; Err : text });
+  list_auctions: () -> (vec AuctionSummary) query;
+  prepare_auction_claim: (AuctionClaimRequest) -> (variant { Ok : AuctionClaimResponse; Err : text });
+  finalize_auction_claim: (AuctionFinalizeRequest) -> (variant { Ok : AuctionFinalizeResponse; Err : text });
+  debug_get_utxos: (text) -> (variant { Ok : vec DebugUtxo; Err : text });
 };

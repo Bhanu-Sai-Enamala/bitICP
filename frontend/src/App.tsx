@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { stablecoinActor } from './ic';
+import type { AuctionSummary as ActorAuctionSummary } from './declarations/stablecoin/service.did';
 import {
   connectXverse,
   disconnectXverse,
@@ -99,6 +100,18 @@ interface UiVault {
   withdrawTxId?: string;
 }
 
+interface UiAuction {
+  vaultId: string;
+  paymentAddress: string;
+  ordinalsAddress: string;
+  vaultAddress: string;
+  claimPriceSats: number;
+  offerRatioBps: number;
+  startedAtMs: number;
+  treasuryDeadlineMs: number;
+  claimed: boolean;
+}
+
 interface WithdrawInputRef {
   txid: string;
   vout: number;
@@ -153,6 +166,12 @@ const DEFAULT_CONFIRMATION_TARGET = Number(
 const FIXED_MINT_TOKENS = 10;
 const TARGET_COLLATERAL_RATIO = 130;
 const RUNE_SYMBOL = 'USDBZ';
+const ENABLE_SIWB =
+  (import.meta.env.VITE_ENABLE_SIWB ?? 'true').toLowerCase() !== 'false';
+const REQUIRE_XVERSE =
+  (import.meta.env.VITE_REQUIRE_XVERSE ?? 'true').toLowerCase() !== 'false';
+const ENABLE_AUCTION_TEST =
+  (import.meta.env.VITE_ENABLE_AUCTION_TEST ?? 'true').toLowerCase() !== 'false';
 
 const formatNumber = (
   value?: number | null,
@@ -225,6 +244,31 @@ const mapVaultSummary = (vault: VaultSummary): UiVault => {
   };
 };
 
+const mapAuctionSummary = (entry: ActorAuctionSummary): UiAuction => ({
+  vaultId: entry.vault_id,
+  paymentAddress: entry.payment_address,
+  ordinalsAddress: entry.ordinals_address,
+  vaultAddress: entry.vault_address,
+  claimPriceSats: Number(entry.claim_price_sats ?? 0n),
+  offerRatioBps: entry.offer_ratio_bps,
+  startedAtMs: Number(entry.started_at ?? 0n) / 1_000_000,
+  treasuryDeadlineMs: Number(entry.treasury_deadline ?? 0n) / 1_000_000,
+  claimed: entry.claimed
+});
+
+function formatTimeLeft(deadlineMs: number): string {
+  const delta = deadlineMs - Date.now();
+  if (delta <= 0) {
+    return '0s';
+  }
+  const minutes = Math.floor(delta / 60000);
+  const seconds = Math.floor((delta % 60000) / 1000);
+  if (minutes <= 0) {
+    return `${seconds}s`;
+  }
+  return `${minutes}m ${seconds}s`;
+}
+
 export default function App() {
   const [actor, setActor] = useState<StablecoinActor | null>(null);
   const [backendUrl, setBackendUrl] = useState<string>();
@@ -245,7 +289,7 @@ export default function App() {
   const [vaults, setVaults] = useState<UiVault[]>([]);
   const [isVaultsLoading, setIsVaultsLoading] = useState(false);
   const [infoMessage, setInfoMessage] = useState<string>();
-  const [activeTab, setActiveTab] = useState<'mint' | 'withdraw'>('mint');
+  const [activeTab, setActiveTab] = useState<'mint' | 'withdraw' | 'auction'>('mint');
   const [pendingWithdraw, setPendingWithdraw] = useState<{
     vaultId: string;
     psbt: string;
@@ -255,6 +299,12 @@ export default function App() {
   const [withdrawInfo, setWithdrawInfo] = useState<string>();
   const [withdrawError, setWithdrawError] = useState<string>();
   const [showWithdrawnVaults, setShowWithdrawnVaults] = useState(false);
+  const [auctions, setAuctions] = useState<UiAuction[]>([]);
+  const [isAuctionLoading, setIsAuctionLoading] = useState(false);
+  const [auctionInfo, setAuctionInfo] = useState<string>();
+  const [auctionError, setAuctionError] = useState<string>();
+  const [forceAuctionVaultId, setForceAuctionVaultId] = useState('');
+  const [claimingAuctionId, setClaimingAuctionId] = useState<string | null>(null);
   const [authSession, setAuthSession] = useState<{ token: string; expiresAt: number } | null>(null);
   const [authStatus, setAuthStatus] = useState<string>();
   const [sessionChecked, setSessionChecked] = useState(false);
@@ -309,6 +359,15 @@ export default function App() {
   }, [actor, refreshPreview]);
 
   useEffect(() => {
+    if (!ENABLE_SIWB) {
+      if (!sessionChecked) {
+        const devSession = { token: 'dev-session', expiresAt: Date.now() + 60 * 60 * 1000 };
+        setAuthSession(devSession);
+        setAuthStatus('Wallet sync disabled (local test)');
+        setSessionChecked(true);
+      }
+      return;
+    }
     if (!backendBase) return;
     if (sessionChecked) return;
     const stored = localStorage.getItem(SIWB_STORAGE_KEY);
@@ -434,6 +493,12 @@ export default function App() {
 
   const authenticateWallet = useCallback(
     async (connection: XverseConnection) => {
+      if (!ENABLE_SIWB) {
+        const devSession = { token: 'dev-session', expiresAt: Date.now() + 60 * 60 * 1000 };
+        setAuthSession(devSession);
+        setAuthStatus('Wallet sync disabled (local test)');
+        return;
+      }
       if (!backendBase) {
         setAuthStatus('Backend URL not configured');
         return;
@@ -530,6 +595,26 @@ export default function App() {
     [actor]
   );
 
+  const loadAuctions = useCallback(async () => {
+    if (!actor) {
+      setAuctions([]);
+      return;
+    }
+    setIsAuctionLoading(true);
+    setAuctionError(undefined);
+    try {
+      const rows = await actor.list_auctions();
+      const mapped = rows.map((entry) => mapAuctionSummary(entry));
+      mapped.sort((a, b) => b.startedAtMs - a.startedAtMs);
+      setAuctions(mapped);
+    } catch (e) {
+      console.error('[frontend] list_auctions failed', e);
+      setAuctionError((e as Error).message);
+    } finally {
+      setIsAuctionLoading(false);
+    }
+  }, [actor]);
+
   const handleConnectXverse = useCallback(async () => {
     setError(undefined);
     try {
@@ -576,6 +661,14 @@ export default function App() {
     }
     loadVaults(target);
   }, [actor, watchAddress, loadVaults]);
+
+  useEffect(() => {
+    if (!actor) {
+      setAuctions([]);
+      return;
+    }
+    loadAuctions();
+  }, [actor, loadAuctions]);
 
   useEffect(() => {
     setPendingWithdraw(null);
@@ -717,7 +810,7 @@ export default function App() {
       setError('Build a PSBT first.');
       return;
     }
-    if (!paymentAccount) {
+    if (REQUIRE_XVERSE && !paymentAccount) {
       setError('Connect Xverse first.');
       return;
     }
@@ -738,11 +831,11 @@ export default function App() {
   }, [psbtBase64, paymentAccount, mintInputCount, finalizeSignedPsbt]);
 
   const handleMintAndSign = useCallback(async () => {
-    if (!paymentAccount) {
+    if (REQUIRE_XVERSE && !paymentAccount) {
       setError('Connect Xverse first.');
       return;
     }
-    if (!authSession) {
+    if (ENABLE_SIWB && !authSession) {
       setError('Sync wallet before minting.');
       return;
     }
@@ -775,7 +868,7 @@ export default function App() {
         setWithdrawError('Prepare a withdraw PSBT first.');
         return;
       }
-      if (!paymentAccount || !ordinalsAccount) {
+      if (REQUIRE_XVERSE && (!paymentAccount || !ordinalsAccount)) {
         setWithdrawError('Connect Xverse first to sign.');
         return;
       }
@@ -820,7 +913,7 @@ export default function App() {
 
   const handleWithdrawClick = useCallback(async (vault: UiVault) => {
     if (!actor) return;
-    if (!paymentAccount || !ordinalsAccount) {
+    if (REQUIRE_XVERSE && (!paymentAccount || !ordinalsAccount)) {
       setWithdrawError('Connect Xverse first to withdraw.');
       return;
     }
@@ -855,6 +948,101 @@ export default function App() {
       setIsWithdrawLoading(false);
     }
   }, [actor, ordinalsAccount, paymentAccount, handleSignWithdraw]);
+
+  const handleForceAuction = useCallback(async () => {
+    if (!actor) return;
+    const trimmed = forceAuctionVaultId.trim();
+    if (!trimmed) return;
+    setAuctionError(undefined);
+    setAuctionInfo(undefined);
+    setIsAuctionLoading(true);
+    try {
+      const response = await actor.force_start_auction(trimmed);
+      if ('Err' in response) {
+        setAuctionError(response.Err);
+      } else {
+        setAuctionInfo(`Auction started for vault ${response.Ok.vault_id}`);
+        await loadAuctions();
+      }
+    } catch (e) {
+      setAuctionError((e as Error).message);
+    } finally {
+      setIsAuctionLoading(false);
+    }
+  }, [actor, forceAuctionVaultId, loadAuctions]);
+
+  const handleClaimAuction = useCallback(
+    async (auction: UiAuction) => {
+      if (!actor) return;
+      if (REQUIRE_XVERSE && (!paymentAccount || !ordinalsAccount)) {
+        setAuctionError('Connect Xverse before claiming.');
+        return;
+      }
+      const ordAddress = ordinalsAccount?.address ?? ordinalsAddress;
+      const ordPubKey = ordinalsAccount?.publicKey ?? ordinalsPubKey;
+      const ordType = ordinalsAccount?.addressType ?? 'p2tr';
+      const payAddress = paymentAccount?.address ?? paymentAddress;
+      const payPubKey = paymentAccount?.publicKey ?? paymentPubKey;
+      const payType = paymentAccount?.addressType ?? 'p2wpkh';
+      if (!ordAddress || !ordPubKey || !payAddress || !payPubKey) {
+        setAuctionError('Missing wallet addresses for claim.');
+        return;
+      }
+      setAuctionError(undefined);
+      setAuctionInfo('Preparing auction claim…');
+      setClaimingAuctionId(auction.vaultId);
+      try {
+        const prepared = await actor.prepare_auction_claim({
+          vault_id: auction.vaultId,
+          ordinals: {
+            address: ordAddress,
+            address_type: ordType,
+            public_key: ordPubKey
+          },
+          payment: {
+            address: payAddress,
+            address_type: payType,
+            public_key: payPubKey
+          }
+        });
+        if ('Err' in prepared) {
+          setAuctionError(prepared.Err);
+          return;
+        }
+        setAuctionInfo('PSBT ready. Sign with Xverse…');
+        const signed = await signPsbtWithXverse(prepared.Ok.psbt, {
+          autoFinalize: false,
+          broadcast: false
+        });
+        const finalized = await actor.finalize_auction_claim({
+          vault_id: auction.vaultId,
+          psbt: signed,
+          claimant_payment_address: payAddress
+        });
+        if ('Err' in finalized) {
+          setAuctionError(finalized.Err);
+          return;
+        }
+        const txid = finalized.Ok.txid?.[0];
+        setAuctionInfo(txid ? `Auction claim broadcast: ${txid}` : 'Auction claim finalized.');
+        await loadAuctions();
+      } catch (e) {
+        setAuctionError((e as Error).message);
+      } finally {
+        setClaimingAuctionId(null);
+      }
+    },
+    [
+      actor,
+      ordinalsAccount,
+      paymentAccount,
+      ordinalsAddress,
+      ordinalsPubKey,
+      paymentAddress,
+      paymentPubKey,
+      loadAuctions
+    ]
+  );
 
   return (
     <div className="container">
@@ -906,6 +1094,12 @@ export default function App() {
                 onClick={() => setActiveTab('withdraw')}
               >
                 Withdraw
+              </button>
+              <button
+                className={`tab ${activeTab === 'auction' ? 'active' : ''}`}
+                onClick={() => setActiveTab('auction')}
+              >
+                Auctions
               </button>
             </nav>
           </div>
@@ -966,7 +1160,11 @@ export default function App() {
               <div className="mint-actions">
               <button
                 className="btn btn-primary"
-                disabled={isLoading || !paymentAccount || !authSession}
+                disabled={
+                  isLoading ||
+                  (REQUIRE_XVERSE && !paymentAccount) ||
+                  (ENABLE_SIWB && !authSession)
+                }
                 onClick={handleMintAndSign}
               >
                 {isLoading ? 'Processing…' : mintedButtonLabel}
@@ -1231,14 +1429,110 @@ export default function App() {
               {withdrawInfo && (
                 <div className="info" style={{ marginTop: 14 }}>{withdrawInfo}</div>
               )}
-              {withdrawError && (
-                <div className="error" style={{ marginTop: 14 }}>{withdrawError}</div>
-              )}
-            </div>
+          {withdrawError && (
+            <div className="error" style={{ marginTop: 14 }}>{withdrawError}</div>
           )}
-        </section>
+        </div>
+      )}
 
-      </div>
-    </div>
+      {activeTab === 'auction' && (
+        <div className="card-body">
+          <div className="withdraw-panel">
+            <div className="withdraw-headline">
+              <div>
+                <div className="section-title" style={{ marginBottom: 4 }}>Active auctions</div>
+                <div className="muted">Claim unhealthy vaults by burning 10 {RUNE_SYMBOL}.</div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button className="btn-pill" onClick={loadAuctions} disabled={isAuctionLoading}>
+                  {isAuctionLoading ? 'Refreshing…' : 'Refresh'}
+                </button>
+                {ENABLE_AUCTION_TEST && (
+                  <div className="force-auction">
+                    <input
+                      className="input"
+                      placeholder="Vault ID"
+                      value={forceAuctionVaultId}
+                      onChange={(e) => setForceAuctionVaultId(e.target.value)}
+                    />
+                    <button
+                      className="btn btn-small"
+                      onClick={handleForceAuction}
+                      disabled={!forceAuctionVaultId.trim() || isAuctionLoading}
+                    >
+                      Force auction
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+            {isAuctionLoading && <div className="muted">Loading auctions…</div>}
+            {!isAuctionLoading && auctions.length === 0 && (
+              <div className="muted">No auctions are available right now.</div>
+            )}
+            {!isAuctionLoading && auctions.length > 0 && (
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Vault</th>
+                    <th>Claim price</th>
+                    <th>Offer ratio</th>
+                    <th>Time left</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {auctions.map((auction) => {
+                    const priceUsd =
+                      preview?.price != null
+                        ? formatUsd((auction.claimPriceSats / SATS_PER_BTC) * preview.price, 2)
+                        : '--';
+                    const ratioPercent = `${(auction.offerRatioBps / 100).toFixed(2)}%`;
+                    const timeLeft = auction.claimed
+                      ? 'Claimed'
+                      : formatTimeLeft(auction.treasuryDeadlineMs);
+                    return (
+                      <tr key={auction.vaultId}>
+                        <td>
+                          <div className="mono">{truncate(auction.vaultId, 8)}</div>
+                          <div className="muted mono" style={{ fontSize: 12 }}>
+                            {truncate(auction.vaultAddress, 8)}
+                          </div>
+                        </td>
+                        <td>
+                          <div>{formatBtc(auction.claimPriceSats / SATS_PER_BTC)} BTC</div>
+                          <div className="muted">{priceUsd}</div>
+                        </td>
+                        <td>{ratioPercent}</td>
+                        <td>{timeLeft}</td>
+                        <td style={{ textAlign: 'right' }}>
+                          {auction.claimed ? (
+                            <span className="pill muted">Claimed</span>
+                          ) : (
+                            <button
+                              className="btn btn-small"
+                              onClick={() => handleClaimAuction(auction)}
+                              disabled={claimingAuctionId === auction.vaultId}
+                            >
+                              {claimingAuctionId === auction.vaultId ? 'Claiming…' : 'Claim'}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+          {auctionInfo && <div className="info" style={{ marginTop: 14 }}>{auctionInfo}</div>}
+          {auctionError && <div className="error" style={{ marginTop: 14 }}>{auctionError}</div>}
+        </div>
+      )}
+
+    </section>
+
+  </div>
+</div>
   );
 }

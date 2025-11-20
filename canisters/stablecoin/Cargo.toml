@@ -17,3 +17,4 @@ k256 = { version = "0.13", default-features = false, features = ["alloc", "schno
 hex = "0.4"
 sha2 = { version = "0.10", default-features = false }
 bech32 = { version = "0.9", default-features = false }
+ic-cdk-timers = "0.7"

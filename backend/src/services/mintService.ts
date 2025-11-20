@@ -61,15 +61,20 @@ async function listWalletDirectory(): Promise<Set<string>> {
   return new Set((payload.wallets ?? []).map((entry) => entry.name));
 }
 
-function buildDescriptor(protocolXOnly: string, userCompressed33: string): string {
+function buildDescriptor(
+  protocolXOnly: string,
+  userCompressed33: string,
+  oracleXOnly: string,
+  liquidationXOnly: string
+): string {
   const internal = xOnly(config.guardianPublicKey);
   const userX = xOnly(userCompressed33);
   // Redemption leaf: protocol key (x-only) + user
   const leafAX = `multi_a(2,${protocolXOnly.toLowerCase()},${userX})`;
 
-  const vkA = xOnly(config.vaultKeys[0]);
-  const vkB = xOnly(config.vaultKeys[1]);
-  const leafBX = `multi_a(2,${vkA},${vkB})`;
+  const oracleX = xOnly(oracleXOnly);
+  const liquidationX = xOnly(liquidationXOnly);
+  const leafBX = `multi_a(2,${oracleX},${liquidationX})`;
 
   // TapTree with guardian internal key and two script leaves
   return `tr(${internal},{${leafAX},${leafBX}})`;
@@ -304,7 +309,7 @@ function buildOutputsObject(
   return outputs;
 }
 
-function patchRunestoneData(rawHex: string): string {
+export function patchRunestoneData(rawHex: string): string {
   const data = config.mintRunestoneData;
   const lowerHex = rawHex.toLowerCase();
 
@@ -345,12 +350,30 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
     vaultId,
     protocolPublicKey
   });
-  const descriptor = buildDescriptor(protocolPublicKey, body.payment.publicKey);
+  const descriptor = buildDescriptor(
+    protocolPublicKey,
+    body.payment.publicKey,
+    body.oraclePublicKey,
+    body.liquidationPublicKey
+  );
   const descriptorInfo = await getDescriptorInfo(descriptor);
   const descriptorWithChecksum = descriptorInfo.descriptor; // already contains #checksum
 
   const vaultAddress = await deriveVaultAddress(descriptorWithChecksum);
   console.info('[mintService] descriptor ready', { wallet, vaultAddress, vaultId });
+
+  const vaultWalletName = `vault-${sanitizeWalletName(vaultId)}`;
+  const vaultWalletState = await ensureWallet(vaultWalletName);
+  const descriptorImport = await importDescriptor(vaultWalletName, descriptorWithChecksum, 'vault', 0);
+  if (vaultWalletState === 'created' || descriptorImport === 'imported') {
+    await rescanWallet(vaultWalletName, 0);
+  }
+  await cacheKnownWalletDescriptors(
+    body.payment.address,
+    body.payment.publicKey,
+    body.ordinals.address,
+    body.ordinals.publicKey
+  );
 
   const resolvedAmounts = resolveAmounts(body.amounts);
   const overrideInputs = body.inputsOverride;
@@ -466,6 +489,10 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
     vaultId,
     protocolPublicKey,
     protocolChainCode,
+    oraclePublicKey: body.oraclePublicKey,
+    oracleChainCode: body.oracleChainCode,
+    liquidationPublicKey: body.liquidationPublicKey,
+    liquidationChainCode: body.liquidationChainCode,
     descriptor: descriptorWithChecksum,
     originalPsbt: convertedPsbt,
     patchedPsbt: updatedPsbt,
@@ -512,8 +539,7 @@ async function buildLegacyMintPsbt(
     add_inputs: true,
     changeAddress: body.payment.address,
     fee_rate: body.feeRate,
-    subtractFeeFromOutputs: [],
-    changeType: 'witness_v0_keyhash'
+    subtractFeeFromOutputs: []
   };
 
   const funded = await runCliJson<WalletCreateFundedPsbtResult>(
@@ -531,6 +557,27 @@ async function buildLegacyMintPsbt(
   const decoded = await runCliJson<DecodedPsbt>(['decodepsbt', updatedPsbt]);
 
   const changeOutput = findOutputByAddress(decoded.tx.vout, body.payment.address);
+  const overrideInputs = decoded.tx.vin.map((vin) => ({
+    txid: vin.txid,
+    vout: vin.vout
+  }));
+  const overrideOutputs = buildOutputsObject(
+    body.ordinals.address,
+    config.feeRecipientAddress,
+    vaultAddress,
+    body.payment.address,
+    resolvedAmounts,
+    changeOutput
+  );
+
+  const legacyRawTx = await runCliRaw([
+    'createrawtransaction',
+    JSON.stringify(overrideInputs),
+    JSON.stringify(overrideOutputs)
+  ]);
+  const patchedRawTx = patchRunestoneData(legacyRawTx);
+  const convertedPsbt = await runCliRaw(['converttopsbt', patchedRawTx]);
+  const patchedPsbt = await runCliRaw(['utxoupdatepsbt', convertedPsbt], { wallet });
 
   return {
     wallet,
@@ -538,11 +585,15 @@ async function buildLegacyMintPsbt(
     vaultId: body.vaultId,
     protocolPublicKey: body.protocolPublicKey,
     protocolChainCode: body.protocolChainCode,
+    oraclePublicKey: body.oraclePublicKey,
+    oracleChainCode: body.oracleChainCode,
+    liquidationPublicKey: body.liquidationPublicKey,
+    liquidationChainCode: body.liquidationChainCode,
     descriptor: descriptorWithChecksum,
     originalPsbt: funded.psbt,
-    patchedPsbt: updatedPsbt,
-    rawTransactionHex: '',
-    inputs: decoded.tx.vin.map((vin) => ({ txid: vin.txid, vout: vin.vout })),
+    patchedPsbt,
+    rawTransactionHex: patchedRawTx,
+    inputs: overrideInputs,
     changeOutput: changeOutput
       ? {
           address: body.payment.address,
@@ -562,6 +613,49 @@ export async function warmUserWallets(
   paymentCompressed33: string,
   ordinalsPubKey: string,
   ordinalsAddress: string
+): Promise<void> {
+  const wallet = paymentAddress;
+  const paymentState = await ensureWallet(wallet);
+  const ordinalsXOnly = xOnly(ordinalsPubKey);
+
+  if (!warmedPaymentWallets.has(paymentAddress)) {
+    const paymentImport = await importPaymentDescriptor(wallet, paymentCompressed33, 0);
+    if (paymentImport === 'imported') {
+      console.info('[siwb] payment descriptor imported during warmup', { wallet });
+    }
+    if (paymentState === 'created' || paymentImport === 'imported') {
+      await rescanWallet(wallet, 0);
+    }
+    warmedPaymentWallets.add(paymentAddress);
+  }
+
+  if (!warmedOrdinalWallets.has(ordinalsAddress)) {
+    const ordWallet = `ord-${sanitizeWalletName(ordinalsAddress)}`;
+    const ordState = await ensureWallet(ordWallet);
+    const ordImport = await importOrdinalsDescriptor(ordWallet, ordinalsXOnly, 'ordinals', 0);
+    if (ordState === 'created' || ordImport === 'imported') {
+      await rescanWallet(ordWallet, 0);
+    }
+    warmedOrdinalWallets.add(ordinalsAddress);
+  }
+
+  const userVaults = await vaultStore.listVaultsByPayment(paymentAddress);
+  for (const vault of userVaults) {
+    if (warmedVaultWallets.has(vault.vaultId)) continue;
+    const vaultWallet = `vault-${sanitizeWalletName(vault.vaultId)}`;
+    const vaultState = await ensureWallet(vaultWallet);
+    const imported = await importDescriptor(vaultWallet, vault.descriptor, 'vault', 0);
+    if (vaultState === 'created' || imported === 'imported') {
+      await rescanWallet(vaultWallet, 0);
+    }
+    warmedVaultWallets.add(vault.vaultId);
+  }
+}
+async function cacheKnownWalletDescriptors(
+  paymentAddress: string,
+  paymentCompressed33: string,
+  ordinalsAddress: string,
+  ordinalsPubKey: string
 ): Promise<void> {
   const wallet = paymentAddress;
   const paymentState = await ensureWallet(wallet);

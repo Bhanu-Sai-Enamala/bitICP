@@ -9,6 +9,7 @@ import { sanitizeWalletName } from './mintService.js';
 import { refreshVaultHealth } from './vaultHealth.js';
 
 const PAYMENT_WITHDRAW_SATS = 1_000; // Base payout 0.00001000 BTC; change gets added on top
+const WITHDRAW_FEE_BUFFER_SATS = 3_000;
 const PSBT_PARSE_OPTIONS = {
   allowUnknownInputs: true,
   allowUnknownOutputs: true,
@@ -33,6 +34,10 @@ export interface WithdrawVaultPayload {
   vaultAddress: string;
   protocolPublicKey: string;
   protocolChainCode: string;
+  oraclePublicKey: string;
+  oracleChainCode: string;
+  liquidationPublicKey: string;
+  liquidationChainCode: string;
   descriptor: string;
   collateralSats: number;
   rune: string;
@@ -77,6 +82,10 @@ export async function ensureVaultRecordFromPayload(
     vaultId,
     protocolPublicKey: payload.protocolPublicKey,
     protocolChainCode: payload.protocolChainCode,
+    oraclePublicKey: payload.oraclePublicKey,
+    oracleChainCode: payload.oracleChainCode,
+    liquidationPublicKey: payload.liquidationPublicKey,
+    liquidationChainCode: payload.liquidationChainCode,
     vaultAddress: payload.vaultAddress,
     descriptor: payload.descriptor,
     collateralSats: payload.collateralSats,
@@ -547,18 +556,10 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
 
   const txInfo = await runCliJson<RawTxInfo>(['getrawtransaction', record.txid, 'true']);
   console.info('[withdraw] raw transaction fetched', { vaultId, txid: record.txid });
-  const ordinalsIdx = 1;
-  const collateralIdx = 2;
-  const ordEntry = txInfo.vout[ordinalsIdx];
-  const vaultEntry = txInfo.vout[collateralIdx];
+  const ordEntry = txInfo.vout.find((v) => matchesAddress(v, record.metadata.ordinalsAddress));
+  const vaultEntry = txInfo.vout.find((v) => matchesAddress(v, record.vaultAddress));
   if (!ordEntry || !vaultEntry) {
     throw new Error('vault_outputs_not_found');
-  }
-  if (!matchesAddress(ordEntry, record.metadata.ordinalsAddress)) {
-    throw new Error('ordinals_output_mismatch');
-  }
-  if (!matchesAddress(vaultEntry, record.vaultAddress)) {
-    throw new Error('vault_output_mismatch');
   }
 
   const inputs = [
@@ -568,7 +569,8 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
 
   const burnMetadataValue = (burnMetadata ?? config.withdrawBurnMetadata).toLowerCase();
   const ordinalsPayoutBtc = Number(satsToBtcString(PAYMENT_WITHDRAW_SATS));
-  const collateralPayoutBtc = vaultEntry.value;
+  const collateralPayoutSats = Math.max(record.collateralSats - WITHDRAW_FEE_BUFFER_SATS, 0);
+  const collateralPayoutBtc = Number(satsToBtcString(collateralPayoutSats));
   let changeAmountBtc = 0;
   const paymentWallet = record.metadata.paymentAddress;
   try {
@@ -590,8 +592,11 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
       ];
       const walletOutputs = [
         { data: burnMetadataValue },
-        { [record.metadata.paymentAddress]: ordinalsPayoutBtc },
-        { [record.metadata.paymentAddress]: collateralPayoutBtc }
+        {
+          [record.metadata.paymentAddress]: Number(
+            (ordinalsPayoutBtc + collateralPayoutBtc).toFixed(8)
+          )
+        }
       ];
       const walletOptions = {
         includeWatching: true,
@@ -612,7 +617,7 @@ export async function prepareWithdraw(vaultId: string, burnMetadata?: string): P
       );
       const totalInputsBtc = ordEntry.value + vaultEntry.value;
       changeAmountBtc = Math.max(
-        totalInputsBtc - ordinalsPayoutBtc - collateralPayoutBtc - funded.fee,
+        totalInputsBtc - (ordinalsPayoutBtc + collateralPayoutBtc) - funded.fee,
         0
       );
       console.info('[withdraw] change estimation', {

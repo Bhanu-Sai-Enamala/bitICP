@@ -4,13 +4,15 @@ use hex;
 use ic_cdk::api::call::RejectionCode;
 use ic_cdk::api::management_canister::bitcoin::{
     bitcoin_get_utxos, bitcoin_send_transaction, BitcoinNetwork, GetUtxosRequest,
-    SendTransactionRequest, Utxo,
+    GetUtxosResponse, SendTransactionRequest, Utxo,
 };
 use ic_cdk::api::management_canister::http_request::{
     http_request, CanisterHttpRequestArgument, HttpHeader, HttpMethod, HttpResponse, TransformArgs,
     TransformContext, TransformFunc,
 };
 use ic_cdk::api::time;
+use ic_cdk::spawn;
+use ic_cdk_timers::{set_timer_interval, TimerId};
 use ic_cdk::caller;
 use ic_cdk::storage::{stable_restore, stable_save};
 use ic_cdk_macros::{init, post_upgrade, pre_upgrade, query, update};
@@ -25,6 +27,7 @@ use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Write as FmtWrite;
+use std::time::Duration;
 // Using explicit Candid-compatible types (avoid depending on ic-cdk internal aliases)
 
 const HTTP_CYCLES_COST: u128 = 2_000_000_000_000; // 2T cycles (~0.2T min) per request baseline
@@ -38,7 +41,14 @@ const SCHNORR_KEY_ALGORITHM: &str = "bip340secp256k1";
 const SCHNORR_KEY_NAME: &str = "dfx_test_key";
 const CANISTER_VAULTS_ENABLED: bool = true;
 const PROTOCOL_DOMAIN_LABEL: &[u8] = b"usdb";
-const PROTOCOL_ROLE_LABEL: &[u8] = b"proto";
+const PROTOCOL_SPEND_ROLE_LABEL: &[u8] = b"proto";
+const PROTOCOL_ORACLE_ROLE_LABEL: &[u8] = b"oracle";
+const PROTOCOL_LIQUIDATION_ROLE_LABEL: &[u8] = b"liquid";
+const AUCTION_THRESHOLD_RATIO_BPS: u32 = 11_200; // 112%
+const AUCTION_MIN_RATIO_BPS: u32 = 10_100; // 101%
+const AUCTION_DURATION_SECS: u64 = 30 * 60;
+const AUCTION_TIMER_INTERVAL_SECS: u64 = 60;
+const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const TX_FEE_BUFFER_SATS: u64 = 3_000;
 const DEFAULT_ORDINALS_SATS: u64 = 1_000;
 const DEFAULT_FEE_SATS: u64 = 1_000;
@@ -67,6 +77,10 @@ struct BackendConfig {
     rune_op_return_hex: String,
     #[serde(default)]
     withdraw_burn_hex: String,
+    #[serde(default)]
+    broadcast_mint_via_backend: bool,
+    #[serde(default)]
+    broadcast_withdraw_via_backend: bool,
 }
 
 #[derive(Clone, CandidType, Deserialize, Serialize)]
@@ -106,6 +120,8 @@ struct Settings {
     schnorr_key_name: String,
     #[serde(default)]
     protocol_keys: ProtocolKeysConfig,
+    #[serde(default)]
+    local_testing_mode: bool,
 }
 
 impl Default for Settings {
@@ -125,6 +141,7 @@ impl Default for Settings {
                 vault_key_b: "03cb4d09e437d2a3497d6507fe62f66f668c9c647d4ea9ffb02c8845c5c53ce663"
                     .into(),
             },
+            local_testing_mode: false,
         }
     }
 }
@@ -133,11 +150,13 @@ thread_local! {
     static SETTINGS: RefCell<Settings> = RefCell::new(Settings::default());
     static VAULTS: RefCell<BTreeMap<String, StoredVaultRecord>> = RefCell::new(BTreeMap::new());
     static PENDING_MINTS: RefCell<BTreeMap<String, PendingMintRecord>> = RefCell::new(BTreeMap::new());
+    static AUCTION_TIMER: RefCell<Option<TimerId>> = RefCell::new(None);
 }
 
 #[init]
 fn init() {
     ic_cdk::println!("stablecoin canister initialized at {}", time());
+    schedule_auction_timer();
 }
 
 #[pre_upgrade]
@@ -158,16 +177,19 @@ fn post_upgrade() {
         SETTINGS.with(|s| *s.borrow_mut() = cfg);
         VAULTS.with(|v| *v.borrow_mut() = vaults);
         PENDING_MINTS.with(|p| *p.borrow_mut() = pending);
+        schedule_auction_timer();
         return;
     }
     if let Ok((cfg, vaults)) = stable_restore::<(Settings, BTreeMap<String, StoredVaultRecord>)>() {
         SETTINGS.with(|s| *s.borrow_mut() = cfg);
         VAULTS.with(|v| *v.borrow_mut() = vaults);
+        schedule_auction_timer();
         return;
     }
     // Try restore new layout first; fall back to legacy BackendConfig-only
     if let Ok((cfg,)) = stable_restore::<(Settings,)>() {
         SETTINGS.with(|s| *s.borrow_mut() = cfg);
+        schedule_auction_timer();
         return;
     }
     if let Ok((legacy_backend,)) = stable_restore::<(BackendConfig,)>() {
@@ -177,6 +199,7 @@ fn post_upgrade() {
             *s.borrow_mut() = tmp;
         });
     }
+    schedule_auction_timer();
 }
 
 #[query(name = "version")]
@@ -199,6 +222,23 @@ fn get_backend_config() -> BackendConfig {
     SETTINGS.with(|settings| settings.borrow().backend.clone())
 }
 
+fn schedule_auction_timer() {
+    AUCTION_TIMER.with(|slot| {
+        if slot.borrow().is_some() {
+            return;
+        }
+        let interval = Duration::from_secs(AUCTION_TIMER_INTERVAL_SECS.max(1));
+        let timer_id = set_timer_interval(interval, || {
+            spawn(async {
+                if let Err(err) = auction_tick().await {
+                    ic_cdk::println!("[auction] tick error {}", err);
+                }
+            });
+        });
+        *slot.borrow_mut() = Some(timer_id);
+    });
+}
+
 #[update]
 fn set_backend_config(base_url: String, api_key: Option<String>) {
     if !base_url.starts_with("https://") {
@@ -210,6 +250,228 @@ fn set_backend_config(base_url: String, api_key: Option<String>) {
         st.backend.base_url = base_url;
         st.backend.api_key = api_key;
     });
+}
+
+#[update]
+fn set_backend_broadcast_mode(mint_via_backend: bool, withdraw_via_backend: bool) {
+    SETTINGS.with(|settings| {
+        let mut st = settings.borrow_mut();
+        st.backend.broadcast_mint_via_backend = mint_via_backend;
+        st.backend.broadcast_withdraw_via_backend = withdraw_via_backend;
+    });
+}
+
+#[update]
+fn set_local_testing_mode(enabled: bool) {
+    SETTINGS.with(|settings| {
+        settings.borrow_mut().local_testing_mode = enabled;
+    });
+}
+
+#[query]
+fn list_auctions() -> Vec<AuctionSummary> {
+    VAULTS.with(|store| {
+        store
+            .borrow()
+            .values()
+            .filter_map(|record| {
+                let state = record.auction_state.as_ref()?;
+                if state.claimed {
+                    return None;
+                }
+                Some(auction_summary_from(record, state))
+            })
+            .collect::<Vec<_>>()
+    })
+}
+
+#[update]
+async fn force_start_auction(vault_id: String) -> Result<AuctionSummary, String> {
+    if !CANISTER_VAULTS_ENABLED {
+        return Err("vault_storage_disabled".into());
+    }
+    let snapshot = VAULTS.with(|store| store.borrow().get(&vault_id).cloned());
+    let record = snapshot.ok_or_else(|| "vault_not_found".to_string())?;
+    let mut refreshed = refresh_stored_vault(record).await;
+    let now = ic_cdk::api::time();
+    let state = start_auction_state(refreshed.collateral_sats, now);
+    refreshed.auction_state = Some(state.clone());
+    let summary = auction_summary_from(&refreshed, &state);
+    VAULTS.with(|store| {
+        store.borrow_mut().insert(vault_id, refreshed);
+    });
+    Ok(summary)
+}
+
+#[update]
+async fn prepare_auction_claim(
+    request: AuctionClaimRequest,
+) -> Result<AuctionClaimResponse, String> {
+    let settings = SETTINGS.with(|s| s.borrow().clone());
+    let config = settings.backend;
+    if config.base_url.is_empty() {
+        return Err("backend_not_configured".into());
+    }
+    let stored = stored_vault_by_id(&request.vault_id).ok_or_else(|| "vault_not_found".to_string())?;
+    let state = stored
+        .auction_state
+        .clone()
+        .ok_or_else(|| "auction_not_active".to_string())?;
+    if state.claimed {
+        return Err("auction_already_claimed".into());
+    }
+    let burn_hex = if config.withdraw_burn_hex.is_empty() {
+        DEFAULT_WITHDRAW_BURN_HEX.to_string()
+    } else {
+        config.withdraw_burn_hex.clone()
+    };
+    let payload = BackendAuctionPrepareRequest {
+        vault_id: request.vault_id.clone(),
+        claim_price_sats: state.claim_price_sats,
+        burn_metadata: burn_hex.clone(),
+        fee_rate: stored.fee_rate,
+        ordinals: BackendAddressBinding {
+            address: request.ordinals.address.clone(),
+            address_type: request.ordinals.address_type.clone(),
+            public_key: request.ordinals.public_key.clone(),
+        },
+        payment: BackendAddressBinding {
+            address: request.payment.address.clone(),
+            address_type: request.payment.address_type.clone(),
+            public_key: request.payment.public_key.clone(),
+        },
+    };
+    let mut headers = vec![HttpHeader {
+        name: "Content-Type".into(),
+        value: "application/json".into(),
+    }];
+    if let Some(api_key) = config.api_key.clone() {
+        headers.push(HttpHeader {
+            name: "x-api-key".into(),
+            value: api_key,
+        });
+    }
+    let url = format!("{}/auction/prepare", config.base_url.trim_end_matches('/'));
+    let response = backend_http_request(
+        url,
+        HttpMethod::POST,
+        Some(serde_json::to_vec(&payload).map_err(|err| err.to_string())?),
+        headers,
+    )
+    .await?;
+    if response.status >= Nat::from(400u32) {
+        return Err(format!("backend responded with status {}", response.status));
+    }
+    let parsed: BackendAuctionPrepareResponse =
+        serde_json::from_slice(&response.body).map_err(|err| format!("invalid backend json: {}", err))?;
+    Ok(AuctionClaimResponse {
+        vault_id: parsed.vault_id,
+        psbt: parsed.psbt,
+        burn_metadata: parsed.burn_metadata,
+        claim_price_sats: parsed.claim_price_sats,
+        ordinals_address: parsed.ordinals_address,
+        payment_address: parsed.payment_address,
+    })
+}
+
+#[update]
+async fn finalize_auction_claim(
+    request: AuctionFinalizeRequest,
+) -> Result<AuctionFinalizeResponse, String> {
+    let settings = SETTINGS.with(|s| s.borrow().clone());
+    let config = settings.backend;
+    if config.base_url.is_empty() {
+        return Err("backend_not_configured".into());
+    }
+    let mut headers = vec![HttpHeader {
+        name: "Content-Type".into(),
+        value: "application/json".into(),
+    }];
+    if let Some(api_key) = config.api_key.clone() {
+        headers.push(HttpHeader {
+            name: "x-api-key".into(),
+            value: api_key,
+        });
+    }
+    let mut body = serde_json::json!({
+        "vaultId": request.vault_id,
+        "psbt": request.psbt,
+        "claimantPaymentAddress": request.claimant_payment_address,
+    });
+    let endpoint = format!("{}/auction/finalize", config.base_url.trim_end_matches('/'));
+    let mut response = backend_http_request(
+        endpoint.clone(),
+        HttpMethod::POST,
+        Some(serde_json::to_vec(&body).map_err(|err| err.to_string())?),
+        headers.clone(),
+    )
+    .await?;
+    if response.status == Nat::from(202u32) {
+        let prompt: BackendAuctionSignaturePrompt =
+            serde_json::from_slice(&response.body).map_err(|err| format!("invalid backend json: {}", err))?;
+        let vault_numeric: u64 = prompt.vault_id.parse().map_err(|_| "invalid_vault_id")?;
+        let sighash_bytes = from_hex(&prompt.sighash)?;
+        let sighash = to_array_32(&sighash_bytes)?;
+        let mut oracle_sig: Option<String> = None;
+        let mut liquidation_sig: Option<String> = None;
+        for role in prompt.missing.iter() {
+            match role.as_str() {
+                "oracle" => {
+                    let sig = sign_role_digest(vault_numeric, PROTOCOL_ORACLE_ROLE_LABEL, sighash).await?;
+                    oracle_sig = Some(to_hex(&sig));
+                }
+                "liquidation" => {
+                    let sig =
+                        sign_role_digest(vault_numeric, PROTOCOL_LIQUIDATION_ROLE_LABEL, sighash).await?;
+                    liquidation_sig = Some(to_hex(&sig));
+                }
+                _ => {}
+            }
+        }
+        if oracle_sig.is_none() && liquidation_sig.is_none() {
+            return Err("auction_signatures_unavailable".into());
+        }
+        if let Some(obj) = body.as_object_mut() {
+            if let Some(sig) = oracle_sig {
+                obj.insert("oracleSignature".into(), serde_json::Value::String(sig));
+            }
+            if let Some(sig) = liquidation_sig {
+                obj.insert("liquidationSignature".into(), serde_json::Value::String(sig));
+            }
+        }
+        response = backend_http_request(
+            endpoint.clone(),
+            HttpMethod::POST,
+            Some(serde_json::to_vec(&body).map_err(|err| err.to_string())?),
+            headers.clone(),
+        )
+        .await?;
+        if response.status >= Nat::from(400u32) {
+            return Err(format!("backend responded with status {}", response.status));
+        }
+    } else if response.status >= Nat::from(400u32) {
+        return Err(format!("backend responded with status {}", response.status));
+    }
+    let parsed: BackendAuctionFinalizeResponse =
+        serde_json::from_slice(&response.body).map_err(|err| format!("invalid backend json: {}", err))?;
+    let txid = parsed.txid.clone();
+    VAULTS.with(|store| {
+        if let Some(mut record) = store.borrow().get(&parsed.vault_id).cloned() {
+            if let Some(mut state) = record.auction_state.clone() {
+                state.claimed = true;
+                state.claim_tx_id = txid.clone();
+                state.claimant_address = Some(request.claimant_payment_address.clone());
+                state.last_updated_at = ic_cdk::api::time();
+                record.auction_state = Some(state);
+                store.borrow_mut().insert(record.vault_id.clone(), record);
+            }
+        }
+    });
+    Ok(AuctionFinalizeResponse {
+        vault_id: parsed.vault_id,
+        txid: parsed.txid,
+        hex: parsed.hex,
+    })
 }
 
 #[update]
@@ -384,15 +646,19 @@ struct CollateralPreview {
 
 #[update]
 async fn get_collateral_preview() -> Result<CollateralPreview, String> {
-    let (price, using_fallback_price) = match xrc_btc_usd_price().await {
-        Ok(p) => (p, false),
-        Err(e) => {
-            ic_cdk::println!(
-                "[get_collateral_preview] xrc price unavailable, using fallback {}: {}",
-                COLLATERAL_FALLBACK_PRICE_USD,
-                e
-            );
-            (COLLATERAL_FALLBACK_PRICE_USD, true)
+    let (price, using_fallback_price) = if SETTINGS.with(|s| s.borrow().local_testing_mode) {
+        (COLLATERAL_FALLBACK_PRICE_USD, true)
+    } else {
+        match xrc_btc_usd_price().await {
+            Ok(p) => (p, false),
+            Err(e) => {
+                ic_cdk::println!(
+                    "[get_collateral_preview] xrc price unavailable, using fallback {}: {}",
+                    COLLATERAL_FALLBACK_PRICE_USD,
+                    e
+                );
+                (COLLATERAL_FALLBACK_PRICE_USD, true)
+            }
         }
     };
     let (ratio_bps, usd_cents) = SETTINGS.with(|s| {
@@ -425,6 +691,10 @@ struct StoredVaultRecord {
     descriptor: String,
     protocol_public_key: String,
     protocol_chain_code: String,
+    oracle_public_key: String,
+    oracle_chain_code: String,
+    liquidation_public_key: String,
+    liquidation_chain_code: String,
     collateral_sats: u64,
     rune: String,
     fee_rate: f64,
@@ -439,6 +709,63 @@ struct StoredVaultRecord {
     collateral_ratio_bps: Option<u32>,
     last_btc_price_usd: Option<f64>,
     health: Option<String>,
+    auction_state: Option<AuctionState>,
+}
+
+#[derive(Clone, Default, CandidType, Deserialize, Serialize)]
+struct AuctionState {
+    started_at: u64,
+    last_updated_at: u64,
+    claim_price_sats: u64,
+    offer_ratio_bps: u32,
+    treasury_deadline: u64,
+    claimed: bool,
+    claim_tx_id: Option<String>,
+    claimant_address: Option<String>,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+struct AuctionSummary {
+    vault_id: String,
+    payment_address: String,
+    ordinals_address: String,
+    vault_address: String,
+    claim_price_sats: u64,
+    offer_ratio_bps: u32,
+    started_at: u64,
+    treasury_deadline: u64,
+    claimed: bool,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+struct AuctionClaimRequest {
+    vault_id: String,
+    ordinals: AddressBinding,
+    payment: AddressBinding,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+struct AuctionClaimResponse {
+    vault_id: String,
+    psbt: String,
+    burn_metadata: String,
+    claim_price_sats: u64,
+    ordinals_address: String,
+    payment_address: String,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+struct AuctionFinalizeRequest {
+    vault_id: String,
+    psbt: String,
+    claimant_payment_address: String,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+struct AuctionFinalizeResponse {
+    vault_id: String,
+    txid: Option<String>,
+    hex: String,
 }
 
 #[derive(Clone, CandidType, Deserialize, Serialize)]
@@ -519,10 +846,10 @@ fn next_vault_id() -> u64 {
     })
 }
 
-fn protocol_derivation_path(vault_id: u64) -> Vec<Vec<u8>> {
+fn protocol_derivation_path(role_label: &[u8], vault_id: u64) -> Vec<Vec<u8>> {
     vec![
         PROTOCOL_DOMAIN_LABEL.to_vec(),
-        PROTOCOL_ROLE_LABEL.to_vec(),
+        role_label.to_vec(),
         vault_id.to_be_bytes().to_vec(),
     ]
 }
@@ -532,6 +859,98 @@ fn schnorr_key_id() -> SchnorrKeyId {
     SchnorrKeyId {
         name,
         algorithm: SignatureAlgorithm::Bip340Secp256k1,
+    }
+}
+
+async fn auction_tick() -> Result<(), String> {
+    if !CANISTER_VAULTS_ENABLED {
+        return Ok(());
+    }
+    let snapshots = VAULTS.with(|store| store.borrow().values().cloned().collect::<Vec<_>>());
+    let mut updates: Vec<StoredVaultRecord> = Vec::new();
+    for record in snapshots {
+        let refreshed = refresh_stored_vault(record).await;
+        if let Some(updated) = evaluate_vault_auction(refreshed).await? {
+            updates.push(updated);
+        }
+    }
+    if !updates.is_empty() {
+        VAULTS.with(|store| {
+            let mut map = store.borrow_mut();
+            for record in updates {
+                map.insert(record.vault_id.clone(), record);
+            }
+        });
+    }
+    Ok(())
+}
+
+async fn evaluate_vault_auction(
+    mut record: StoredVaultRecord,
+) -> Result<Option<StoredVaultRecord>, String> {
+    let now = ic_cdk::api::time();
+    let ratio_bps = record.collateral_ratio_bps.unwrap_or(AUCTION_THRESHOLD_RATIO_BPS);
+    if let Some(mut state) = record.auction_state.clone() {
+        if state.claimed {
+            return Ok(None);
+        }
+        let elapsed_secs = now
+            .saturating_sub(state.started_at)
+            .checked_div(NANOS_PER_SECOND)
+            .unwrap_or(0);
+        let (offer_ratio, claim_price) = compute_auction_offer(record.collateral_sats, elapsed_secs);
+        state.offer_ratio_bps = offer_ratio;
+        state.claim_price_sats = claim_price;
+        state.last_updated_at = now;
+        record.auction_state = Some(state);
+        return Ok(Some(record));
+    }
+    if ratio_bps >= AUCTION_THRESHOLD_RATIO_BPS {
+        return Ok(None);
+    }
+    let start_state = start_auction_state(record.collateral_sats, now);
+    record.auction_state = Some(start_state);
+    Ok(Some(record))
+}
+
+fn start_auction_state(collateral_sats: u64, now: u64) -> AuctionState {
+    let elapsed = 0;
+    let (offer_ratio, claim_price) = compute_auction_offer(collateral_sats, elapsed);
+    AuctionState {
+        started_at: now,
+        last_updated_at: now,
+        claim_price_sats: claim_price,
+        offer_ratio_bps: offer_ratio,
+        treasury_deadline: now
+            .saturating_add(AUCTION_DURATION_SECS.saturating_mul(NANOS_PER_SECOND)),
+        claimed: false,
+        claim_tx_id: None,
+        claimant_address: None,
+    }
+}
+
+fn compute_auction_offer(collateral_sats: u64, elapsed_secs: u64) -> (u32, u64) {
+    let clamped = elapsed_secs.min(AUCTION_DURATION_SECS);
+    let delta = AUCTION_THRESHOLD_RATIO_BPS - AUCTION_MIN_RATIO_BPS;
+    let ratio = AUCTION_MIN_RATIO_BPS
+        + ((delta as u64 * clamped) / AUCTION_DURATION_SECS.max(1)) as u32;
+    let limited_ratio = ratio.min(AUCTION_THRESHOLD_RATIO_BPS);
+    let price = ((limited_ratio as u128) * (collateral_sats as u128)
+        / AUCTION_THRESHOLD_RATIO_BPS as u128) as u64;
+    (limited_ratio, price)
+}
+
+fn auction_summary_from(record: &StoredVaultRecord, state: &AuctionState) -> AuctionSummary {
+    AuctionSummary {
+        vault_id: record.vault_id.clone(),
+        payment_address: record.payment_address.clone(),
+        ordinals_address: record.ordinals_address.clone(),
+        vault_address: record.vault_address.clone(),
+        claim_price_sats: state.claim_price_sats,
+        offer_ratio_bps: state.offer_ratio_bps,
+        started_at: state.started_at,
+        treasury_deadline: state.treasury_deadline,
+        claimed: state.claimed,
     }
 }
 
@@ -591,6 +1010,10 @@ fn persist_finalized_vault(pending: PendingMintRecord, txid: String, settings: &
         descriptor: vault.descriptor.clone(),
         protocol_public_key: vault.protocol_public_key.clone(),
         protocol_chain_code: vault.protocol_chain_code.clone(),
+        oracle_public_key: vault.oracle_public_key.clone(),
+        oracle_chain_code: vault.oracle_chain_code.clone(),
+        liquidation_public_key: vault.liquidation_public_key.clone(),
+        liquidation_chain_code: vault.liquidation_chain_code.clone(),
         collateral_sats: vault.collateral_sats,
         rune: vault.rune.clone(),
         fee_rate: vault.fee_rate,
@@ -605,6 +1028,7 @@ fn persist_finalized_vault(pending: PendingMintRecord, txid: String, settings: &
         collateral_ratio_bps: Some(settings.collateral.ratio_bps as u32),
         last_btc_price_usd: Some(pending.btc_price_usd),
         health: Some("pending".into()),
+        auction_state: None,
     };
 
     VAULTS.with(|store| {
@@ -790,43 +1214,59 @@ async fn build_mint_overrides(
         filter: None,
     };
 
-    let utxo_response = match bitcoin_get_utxos(get_request).await {
-        Ok((resp,)) => resp,
-        Err((code, msg)) => {
-            ic_cdk::println!("[build_psbt] bitcoin_get_utxos failed {:?}: {}", code, msg);
-            return Ok(None);
+    let utxo_response = if SETTINGS.with(|s| s.borrow().local_testing_mode) {
+        ic_cdk::println!("[build_psbt] local testing mode: skipping bitcoin_get_utxos hygiene check");
+        GetUtxosResponse {
+            tip_block_hash: vec![],
+            tip_height: 0,
+            next_page: None,
+            utxos: vec![],
+        }
+    } else {
+        match bitcoin_get_utxos(get_request).await {
+            Ok((resp,)) => resp,
+            Err((code, msg)) => {
+                ic_cdk::println!("[build_psbt] bitcoin_get_utxos failed {:?}: {}", code, msg);
+                return Ok(None);
+            }
         }
     };
 
-    if utxo_response.utxos.is_empty() {
+    if !SETTINGS.with(|s| s.borrow().local_testing_mode) && utxo_response.utxos.is_empty() {
         ic_cdk::println!("[build_psbt] no utxos available for {}", payment_address);
         return Ok(None);
     }
 
     let mut utxos = utxo_response.utxos;
-    utxos.sort_by(|a, b| {
-        a.value
-            .cmp(&b.value)
-            .then_with(|| a.outpoint.vout.cmp(&b.outpoint.vout))
-    });
-
     let mut selected: Vec<Utxo> = Vec::new();
     let mut sum = 0u64;
-    for utxo in utxos.into_iter() {
-        sum = sum.saturating_add(utxo.value);
-        selected.push(utxo);
-        if sum >= total_required {
-            break;
-        }
-    }
-
-    if sum < total_required {
+    if SETTINGS.with(|s| s.borrow().local_testing_mode) {
         ic_cdk::println!(
-            "[build_psbt] insufficient utxos sum={} required={}",
-            sum,
-            total_required
+            "[build_psbt] local testing mode: skipping utxo hygiene enforcement (wallet funding assumed)"
         );
-        return Ok(None);
+    } else {
+        utxos.sort_by(|a, b| {
+            a.value
+                .cmp(&b.value)
+                .then_with(|| a.outpoint.vout.cmp(&b.outpoint.vout))
+        });
+
+        for utxo in utxos.into_iter() {
+            sum = sum.saturating_add(utxo.value);
+            selected.push(utxo);
+            if sum >= total_required {
+                break;
+            }
+        }
+
+        if sum < total_required {
+            ic_cdk::println!(
+                "[build_psbt] insufficient utxos sum={} required={}",
+                sum,
+                total_required
+            );
+            return Ok(None);
+        }
     }
 
     let change_sats = sum.saturating_sub(total_required);
@@ -1068,8 +1508,8 @@ fn to_array_64(bytes: &[u8]) -> Result<[u8; 64], String> {
         .map_err(|_| "expected_64_byte_value".into())
 }
 
-async fn derive_protocol_key(vault_id: u64) -> Result<DerivedProtocolKey, String> {
-    let derivation_path = protocol_derivation_path(vault_id);
+async fn derive_role_key(vault_id: u64, role_label: &[u8]) -> Result<DerivedProtocolKey, String> {
+    let derivation_path = protocol_derivation_path(role_label, vault_id);
     ic_cdk::println!(
         "[tsig] deriving protocol key -> vault_id={}, path_len={}",
         vault_id,
@@ -1114,6 +1554,10 @@ async fn derive_protocol_key(vault_id: u64) -> Result<DerivedProtocolKey, String
         public_key_hex,
         chain_code_hex,
     })
+}
+
+async fn derive_protocol_key(vault_id: u64) -> Result<DerivedProtocolKey, String> {
+    derive_role_key(vault_id, PROTOCOL_SPEND_ROLE_LABEL).await
 }
 
 fn compute_target_collateral_sats(price: f64, ratio_bps: u16, usd_cents: u32) -> u64 {
@@ -1233,6 +1677,10 @@ struct BackendMintResult {
     vault_id: String,
     protocol_public_key: String,
     protocol_chain_code: String,
+    oracle_public_key: String,
+    oracle_chain_code: String,
+    liquidation_public_key: String,
+    liquidation_chain_code: String,
     descriptor: String,
     original_psbt: String,
     patched_psbt: String,
@@ -1244,6 +1692,49 @@ struct BackendMintResult {
     fee_rate: f64,
     ordinals_address: String,
     payment_address: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendAuctionPrepareRequest {
+    vault_id: String,
+    claim_price_sats: u64,
+    burn_metadata: String,
+    fee_rate: f64,
+    ordinals: BackendAddressBinding,
+    payment: BackendAddressBinding,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendAuctionPrepareResponse {
+    vault_id: String,
+    psbt: String,
+    burn_metadata: String,
+    claim_price_sats: u64,
+    ordinals_address: String,
+    payment_address: String,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendAuctionFinalizeResponse {
+    vault_id: String,
+    txid: Option<String>,
+    hex: String,
+}
+
+#[derive(Clone, CandidType, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendAuctionSignaturePrompt {
+    status: String,
+    vault_id: String,
+    tapleaf_hash: String,
+    control_block: String,
+    sighash: String,
+    merkle_root: String,
+    leaf_script: String,
+    missing: Vec<String>,
 }
 
 #[derive(Clone, CandidType, Deserialize, Serialize)]
@@ -1440,6 +1931,10 @@ struct BackendBuildPsbtRequest {
     vault_id: String,
     protocol_public_key: String,
     protocol_chain_code: String,
+    oracle_public_key: String,
+    oracle_chain_code: String,
+    liquidation_public_key: String,
+    liquidation_chain_code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     inputs_override: Option<Vec<InputRef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1473,6 +1968,10 @@ struct MintResult {
     vault_id: String,
     protocol_public_key: String,
     protocol_chain_code: String,
+    oracle_public_key: String,
+    oracle_chain_code: String,
+    liquidation_public_key: String,
+    liquidation_chain_code: String,
     descriptor: String,
     original_psbt: String,
     patched_psbt: String,
@@ -1508,6 +2007,10 @@ impl From<BackendMintResult> for MintResult {
             vault_id: value.vault_id,
             protocol_public_key: value.protocol_public_key,
             protocol_chain_code: value.protocol_chain_code,
+            oracle_public_key: value.oracle_public_key,
+            oracle_chain_code: value.oracle_chain_code,
+            liquidation_public_key: value.liquidation_public_key,
+            liquidation_chain_code: value.liquidation_chain_code,
             descriptor: value.descriptor,
             original_psbt: value.original_psbt,
             patched_psbt: value.patched_psbt,
@@ -1577,29 +2080,33 @@ async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
         request.fee_rate
     );
 
-    // Compute dynamic collateral from XRC
+    // Compute dynamic collateral from XRC unless local testing mode is enabled
     let mut price_used = COLLATERAL_FALLBACK_PRICE_USD;
-    let dynamic_vault_sats = match xrc_btc_usd_price().await {
-        Ok(price) => {
-            price_used = price;
-            let sats = compute_target_collateral_sats(
-                price,
-                settings.collateral.ratio_bps,
-                settings.collateral.usd_cents,
-            );
-            ic_cdk::println!(
-                "[build_psbt] xrc collateral -> price={}, sats={}",
-                price,
-                sats
-            );
-            Some(sats)
-        }
-        Err(e) => {
-            ic_cdk::println!(
-                "[build_psbt] xrc price unavailable, trying fallbacks: {}",
-                e
-            );
-            None
+    let dynamic_vault_sats = if settings.local_testing_mode {
+        None
+    } else {
+        match xrc_btc_usd_price().await {
+            Ok(price) => {
+                price_used = price;
+                let sats = compute_target_collateral_sats(
+                    price,
+                    settings.collateral.ratio_bps,
+                    settings.collateral.usd_cents,
+                );
+                ic_cdk::println!(
+                    "[build_psbt] xrc collateral -> price={}, sats={}",
+                    price,
+                    sats
+                );
+                Some(sats)
+            }
+            Err(e) => {
+                ic_cdk::println!(
+                    "[build_psbt] xrc price unavailable, trying fallbacks: {}",
+                    e
+                );
+                None
+            }
         }
     };
 
@@ -1649,10 +2156,14 @@ async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
 
     let vault_id = next_vault_id();
     let protocol_key = derive_protocol_key(vault_id).await?;
+    let oracle_key = derive_role_key(vault_id, PROTOCOL_ORACLE_ROLE_LABEL).await?;
+    let liquidation_key = derive_role_key(vault_id, PROTOCOL_LIQUIDATION_ROLE_LABEL).await?;
     ic_cdk::println!(
-        "[build_psbt] new vault assignment -> vault_id={}, protocol_pub={}",
+        "[build_psbt] new vault assignment -> vault_id={}, protocol_pub={}, oracle_pub={}, liquidation_pub={}",
         vault_id,
-        protocol_key.public_key_hex
+        protocol_key.public_key_hex,
+        oracle_key.public_key_hex,
+        liquidation_key.public_key_hex
     );
 
     let vault_address = derive_vault_address(
@@ -1687,6 +2198,10 @@ async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
         vault_id: vault_id.to_string(),
         protocol_public_key: protocol_key.public_key_hex.clone(),
         protocol_chain_code: protocol_key.chain_code_hex.clone(),
+        oracle_public_key: oracle_key.public_key_hex.clone(),
+        oracle_chain_code: oracle_key.chain_code_hex.clone(),
+        liquidation_public_key: liquidation_key.public_key_hex.clone(),
+        liquidation_chain_code: liquidation_key.chain_code_hex.clone(),
         inputs_override: override_payload.as_ref().map(|p| p.inputs.clone()),
         outputs_override_json: override_payload.as_ref().map(|p| p.outputs_json.clone()),
     };
@@ -1748,6 +2263,7 @@ async fn finalize_mint(request: FinalizeMintRequest) -> Result<FinalizeMintRespo
     if config.base_url.is_empty() {
         return Err("backend_not_configured".into());
     }
+    let backend_broadcast_mint = config.broadcast_mint_via_backend;
 
     let pending = match take_pending_mint(&request.vault_id) {
         Some(record) => record,
@@ -1769,11 +2285,15 @@ async fn finalize_mint(request: FinalizeMintRequest) -> Result<FinalizeMintRespo
         "wallet": pending.vault.wallet,
         "psbt": request.signed_psbt,
         "vaultId": pending.vault.vault_id,
-        "broadcast": false,
+        "broadcast": backend_broadcast_mint,
         "vault": {
             "vaultAddress": pending.vault.vault_address,
             "protocolPublicKey": pending.vault.protocol_public_key,
             "protocolChainCode": pending.vault.protocol_chain_code,
+            "oraclePublicKey": pending.vault.oracle_public_key,
+            "oracleChainCode": pending.vault.oracle_chain_code,
+            "liquidationPublicKey": pending.vault.liquidation_public_key,
+            "liquidationChainCode": pending.vault.liquidation_chain_code,
             "descriptor": pending.vault.descriptor,
             "collateralSats": pending.vault.collateral_sats,
             "rune": pending.vault.rune,
@@ -1824,22 +2344,24 @@ async fn finalize_mint(request: FinalizeMintRequest) -> Result<FinalizeMintRespo
             "txid_unavailable".to_string()
         })?;
 
-    let tx_bytes = match hex::decode(&parsed.hex) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            restore_pending_mint(pending);
-            return Err("invalid_hex_from_backend".into());
-        }
-    };
+    if !backend_broadcast_mint {
+        let tx_bytes = match hex::decode(&parsed.hex) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                restore_pending_mint(pending);
+                return Err("invalid_hex_from_backend".into());
+            }
+        };
 
-    if let Err((code, msg)) = bitcoin_send_transaction(SendTransactionRequest {
-        network: bitcoin_network(),
-        transaction: tx_bytes,
-    })
-    .await
-    {
-        restore_pending_mint(pending);
-        return Err(format!("bitcoin_send_transaction {:?}: {}", code, msg));
+        if let Err((code, msg)) = bitcoin_send_transaction(SendTransactionRequest {
+            network: bitcoin_network(),
+            transaction: tx_bytes,
+        })
+        .await
+        {
+            restore_pending_mint(pending);
+            return Err(format!("bitcoin_send_transaction {:?}: {}", code, msg));
+        }
     }
 
     persist_finalized_vault(pending, txid_value.clone(), &settings);
@@ -1883,6 +2405,10 @@ async fn prepare_withdraw(vault_id: String) -> Result<WithdrawPrepareResponse, S
         "vaultAddress": stored.vault_address,
         "protocolPublicKey": stored.protocol_public_key,
         "protocolChainCode": stored.protocol_chain_code,
+        "oraclePublicKey": stored.oracle_public_key,
+        "oracleChainCode": stored.oracle_chain_code,
+        "liquidationPublicKey": stored.liquidation_public_key,
+        "liquidationChainCode": stored.liquidation_chain_code,
         "descriptor": stored.descriptor,
         "collateralSats": stored.collateral_sats,
         "rune": stored.rune,
@@ -1929,6 +2455,7 @@ async fn finalize_withdraw(
     if config.base_url.is_empty() {
         return Err("backend_not_configured".into());
     }
+    let broadcast_via_backend = config.broadcast_withdraw_via_backend;
     let mut headers = vec![HttpHeader {
         name: "Content-Type".into(),
         value: "application/json".into(),
@@ -1946,7 +2473,7 @@ async fn finalize_withdraw(
     let mut payload = serde_json::json!({
         "vaultId": request.vault_id,
         "psbt": request.signed_psbt,
-        "broadcast": false,
+        "broadcast": broadcast_via_backend,
     });
     let mut response = backend_http_request(
         endpoint.clone(),
@@ -1989,12 +2516,14 @@ async fn finalize_withdraw(
         .map_err(|err| format!("invalid backend json: {}", err))?;
 
     let tx_bytes = hex::decode(&parsed.hex).map_err(|_| "invalid_hex_from_backend".to_string())?;
-    bitcoin_send_transaction(SendTransactionRequest {
-        network: bitcoin_network(),
-        transaction: tx_bytes,
-    })
-    .await
-    .map_err(|err| format!("bitcoin_send_transaction_failed: {:?}", err))?;
+    if !broadcast_via_backend {
+        bitcoin_send_transaction(SendTransactionRequest {
+            network: bitcoin_network(),
+            transaction: tx_bytes,
+        })
+        .await
+        .map_err(|err| format!("bitcoin_send_transaction_failed: {:?}", err))?;
+    }
     Ok(WithdrawFinalizeResponse {
         vault_id: parsed.vault_id,
         txid: parsed.txid,
@@ -2215,15 +2744,22 @@ struct WithdrawSignResponse {
     signature: Vec<u8>,
 }
 async fn sign_protocol_withdraw(vault_id: u64, msg_hash: [u8; 32]) -> Result<Vec<u8>, String> {
-    let derived = derive_protocol_key(vault_id).await?;
+    sign_role_digest(vault_id, PROTOCOL_SPEND_ROLE_LABEL, msg_hash).await
+}
+
+async fn sign_role_digest(
+    vault_id: u64,
+    role_label: &[u8],
+    msg_hash: [u8; 32],
+) -> Result<Vec<u8>, String> {
     ic_cdk::println!(
-        "[sign_protocol_withdraw] signing vault_id={} using protocol_pub={}",
+        "[sign_role_digest] signing vault_id={} role={}",
         vault_id,
-        derived.public_key_hex
+        String::from_utf8_lossy(role_label)
     );
     let arg = SignWithSchnorrArgument {
         message: ByteBuf::from(msg_hash.to_vec()),
-        derivation_path: protocol_derivation_path(vault_id),
+        derivation_path: protocol_derivation_path(role_label, vault_id),
         key_id: schnorr_key_id(),
         aux: None,
     };
@@ -2236,7 +2772,7 @@ async fn sign_protocol_withdraw(vault_id: u64, msg_hash: [u8; 32]) -> Result<Vec
     .await
     .map_err(|(code, msg)| format!("sign_with_schnorr error {:?}: {}", code, msg))?;
     if response.signature.len() != 64 {
-        return Err("invalid_protocol_signature_length".into());
+        return Err("invalid_role_signature_length".into());
     }
     Ok(response.signature)
 }

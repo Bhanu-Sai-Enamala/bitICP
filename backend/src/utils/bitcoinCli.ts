@@ -7,6 +7,7 @@ const execFileAsync = promisify(execFile);
 
 export interface CliOptions {
   wallet?: string;
+  timestamp?: number | 'now';
 }
 
 function buildCliArgs(args: string[], wallet?: string): string[] {

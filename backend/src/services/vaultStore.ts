@@ -18,6 +18,10 @@ export interface VaultRecord {
   vaultId: string;
   protocolPublicKey: string;
   protocolChainCode: string;
+  oraclePublicKey: string;
+  oracleChainCode: string;
+  liquidationPublicKey: string;
+  liquidationChainCode: string;
   vaultAddress: string;
   descriptor: string;
   metadata: VaultRecordMetadata;
@@ -33,6 +37,18 @@ export interface VaultRecord {
   lastHealthCheck?: number;
   txid?: string;
   withdrawTxId?: string;
+  auctionState?: AuctionState | null;
+}
+
+export interface AuctionState {
+  startedAt: number;
+  lastUpdatedAt: number;
+  claimPriceSats: number;
+  offerRatioBps: number;
+  treasuryDeadline: number;
+  claimed: boolean;
+  claimTxId?: string;
+  claimantAddress?: string;
 }
 
 class VaultStore {
@@ -91,6 +107,19 @@ class VaultStore {
       mintTokens: legacyMeta.mintTokens ?? 0,
       mintUsdCents: legacyMeta.mintUsdCents ?? 0
     };
+    const auctionState = record.auctionState
+      ? {
+          startedAt: record.auctionState.startedAt ?? Date.now(),
+          lastUpdatedAt: record.auctionState.lastUpdatedAt ?? Date.now(),
+          claimPriceSats: record.auctionState.claimPriceSats ?? 0,
+          offerRatioBps: record.auctionState.offerRatioBps ?? 0,
+          treasuryDeadline: record.auctionState.treasuryDeadline ?? Date.now(),
+          claimed: record.auctionState.claimed ?? false,
+          claimTxId: record.auctionState.claimTxId,
+          claimantAddress: record.auctionState.claimantAddress
+        }
+      : null;
+
     return {
       ...record,
       metadata,
@@ -99,7 +128,12 @@ class VaultStore {
         record.lockedCollateralBtc ?? (record.collateralSats ?? 0) / SATS_PER_BTC,
       minConfirmations: record.minConfirmations ?? config.vaultMinConfirmations,
       confirmations: record.confirmations ?? 0,
-      withdrawable: record.withdrawable ?? false
+      withdrawable: record.withdrawable ?? false,
+      oraclePublicKey: record.oraclePublicKey ?? '',
+      oracleChainCode: record.oracleChainCode ?? '',
+      liquidationPublicKey: record.liquidationPublicKey ?? '',
+      liquidationChainCode: record.liquidationChainCode ?? '',
+      auctionState
     };
   }
 

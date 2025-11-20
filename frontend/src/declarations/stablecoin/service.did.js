@@ -30,6 +30,10 @@ export const idlFactory = ({ IDL }) => {
     'ordinals_address' : IDL.Text,
     'rune' : IDL.Text,
     'protocol_public_key' : IDL.Text,
+    'oracle_public_key' : IDL.Text,
+    'oracle_chain_code' : IDL.Text,
+    'liquidation_public_key' : IDL.Text,
+    'liquidation_chain_code' : IDL.Text,
     'vault_id' : IDL.Text,
     'descriptor' : IDL.Text,
     'vault_address' : IDL.Text,
@@ -103,6 +107,40 @@ export const idlFactory = ({ IDL }) => {
     'collateral_ratio_bps' : IDL.Opt(IDL.Nat32),
     'health' : IDL.Opt(IDL.Text),
   });
+  const AuctionSummary = IDL.Record({
+    'vault_id' : IDL.Text,
+    'payment_address' : IDL.Text,
+    'ordinals_address' : IDL.Text,
+    'vault_address' : IDL.Text,
+    'claim_price_sats' : IDL.Nat64,
+    'offer_ratio_bps' : IDL.Nat32,
+    'started_at' : IDL.Nat64,
+    'treasury_deadline' : IDL.Nat64,
+    'claimed' : IDL.Bool,
+  });
+  const AuctionClaimRequest = IDL.Record({
+    'vault_id' : IDL.Text,
+    'ordinals' : AddressBinding,
+    'payment' : AddressBinding,
+  });
+  const AuctionClaimResponse = IDL.Record({
+    'vault_id' : IDL.Text,
+    'psbt' : IDL.Text,
+    'burn_metadata' : IDL.Text,
+    'claim_price_sats' : IDL.Nat64,
+    'ordinals_address' : IDL.Text,
+    'payment_address' : IDL.Text,
+  });
+  const AuctionFinalizeRequest = IDL.Record({
+    'vault_id' : IDL.Text,
+    'psbt' : IDL.Text,
+    'claimant_payment_address' : IDL.Text,
+  });
+  const AuctionFinalizeResponse = IDL.Record({
+    'vault_id' : IDL.Text,
+    'txid' : IDL.Opt(IDL.Text),
+    'hex' : IDL.Text,
+  });
   const WithdrawInput = IDL.Record({
     'value' : IDL.Float64,
     'txid' : IDL.Text,
@@ -125,10 +163,40 @@ export const idlFactory = ({ IDL }) => {
     'control_block' : IDL.Vec(IDL.Nat8),
   });
   const WithdrawSignResponse = IDL.Record({ 'signature' : IDL.Vec(IDL.Nat8) });
+  const DebugUtxo = IDL.Record({
+    'txid' : IDL.Text,
+    'vout' : IDL.Nat32,
+    'value_sats' : IDL.Nat64,
+  });
   return IDL.Service({
     'build_psbt' : IDL.Func(
         [BuildPsbtRequest],
         [IDL.Variant({ 'Ok' : MintResponse, 'Err' : IDL.Text })],
+        [],
+      ),
+    'debug_get_utxos' : IDL.Func(
+        [IDL.Text],
+        [IDL.Variant({ 'Ok' : IDL.Vec(DebugUtxo), 'Err' : IDL.Text })],
+        [],
+      ),
+    'force_start_auction' : IDL.Func(
+        [IDL.Text],
+        [IDL.Variant({ 'Ok' : AuctionSummary, 'Err' : IDL.Text })],
+        [],
+      ),
+    'prepare_auction_claim' : IDL.Func(
+        [AuctionClaimRequest],
+        [IDL.Variant({ 'Ok' : AuctionClaimResponse, 'Err' : IDL.Text })],
+        [],
+      ),
+    'finalize_auction_claim' : IDL.Func(
+        [AuctionFinalizeRequest],
+        [IDL.Variant({ 'Ok' : AuctionFinalizeResponse, 'Err' : IDL.Text })],
+        [],
+      ),
+    'debug_get_utxos' : IDL.Func(
+        [IDL.Text],
+        [IDL.Variant({ 'Ok' : IDL.Vec(DebugUtxo), 'Err' : IDL.Text })],
         [],
       ),
     'finalize_mint' : IDL.Func(
@@ -148,6 +216,7 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'health' : IDL.Func([], [IDL.Text], ['query']),
+    'list_auctions' : IDL.Func([], [IDL.Vec(AuctionSummary)], ['query']),
     'list_user_vaults' : IDL.Func(
         [IDL.Text],
         [IDL.Variant({ 'Ok' : IDL.Vec(VaultSummary), 'Err' : IDL.Text })],
@@ -159,7 +228,14 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Variant({ 'Ok' : WithdrawPrepareResponse, 'Err' : IDL.Text })],
         [],
       ),
+    'prepare_withdraw' : IDL.Func(
+        [IDL.Text],
+        [IDL.Variant({ 'Ok' : WithdrawPrepareResponse, 'Err' : IDL.Text })],
+        [],
+      ),
     'set_backend_config' : IDL.Func([IDL.Text, IDL.Opt(IDL.Text)], [], []),
+    'set_backend_broadcast_mode' : IDL.Func([IDL.Bool, IDL.Bool], [], []),
+    'set_local_testing_mode' : IDL.Func([IDL.Bool], [], []),
     'set_fee_config' : IDL.Func(
         [IDL.Nat64, IDL.Nat64, IDL.Text, IDL.Text],
         [],
@@ -171,6 +247,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Variant({ 'Ok' : IDL.Null, 'Err' : IDL.Text })],
         [],
       ),
+    'set_xrc_config' : IDL.Func([IDL.Principal], [], []),
     'sign_withdraw' : IDL.Func(
         [WithdrawSignRequest],
         [IDL.Variant({ 'Ok' : WithdrawSignResponse, 'Err' : IDL.Text })],

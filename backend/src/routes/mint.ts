@@ -57,6 +57,22 @@ const mintRequestSchema = z.object({
     .string()
     .regex(hexChainCode32, 'protocolChainCode must be 32-byte hex')
     .transform((v) => v.toLowerCase()),
+  oraclePublicKey: z
+    .string()
+    .regex(hexXOnly32, 'oraclePublicKey must be 32-byte x-only hex')
+    .transform((v) => v.toLowerCase()),
+  oracleChainCode: z
+    .string()
+    .regex(hexChainCode32, 'oracleChainCode must be 32-byte hex')
+    .transform((v) => v.toLowerCase()),
+  liquidationPublicKey: z
+    .string()
+    .regex(hexXOnly32, 'liquidationPublicKey must be 32-byte x-only hex')
+    .transform((v) => v.toLowerCase()),
+  liquidationChainCode: z
+    .string()
+    .regex(hexChainCode32, 'liquidationChainCode must be 32-byte hex')
+    .transform((v) => v.toLowerCase()),
   amounts: z
     .object({
       ordinalsSats: z.number().int().positive(),
@@ -142,6 +158,10 @@ const finalizeVaultSchema = z.object({
   vaultAddress: z.string().min(1),
   protocolPublicKey: z.string().min(1),
   protocolChainCode: z.string().min(1),
+  oraclePublicKey: z.string().min(1),
+  oracleChainCode: z.string().min(1),
+  liquidationPublicKey: z.string().min(1),
+  liquidationChainCode: z.string().min(1),
   descriptor: z.string().min(1),
   collateralSats: z.number().int().nonnegative(),
   rune: z.string().min(1),
@@ -199,6 +219,22 @@ router.post('/finalize', async (req, res) => {
       });
     }
 
+    if (broadcast) {
+      try {
+        const sentTx = await runCliRaw(['sendrawtransaction', hex]);
+        txid = sentTx || txid;
+        console.info('[mint:finalize] transaction broadcast', { vaultId, txid });
+      } catch (error: any) {
+        console.error('[mint:finalize] broadcast failed', { message: error?.message });
+        return res.status(500).json({
+          error: 'BROADCAST_FAILED',
+          message: error?.message,
+          stdout: error?.stdout,
+          stderr: error?.stderr
+        });
+      }
+    }
+
     if (vault) {
       try {
         const mintedUsd = vault.mintUsdCents / 100;
@@ -210,6 +246,10 @@ router.post('/finalize', async (req, res) => {
           vaultId,
           protocolPublicKey: vault.protocolPublicKey,
           protocolChainCode: vault.protocolChainCode,
+          oraclePublicKey: vault.oraclePublicKey,
+          oracleChainCode: vault.oracleChainCode,
+          liquidationPublicKey: vault.liquidationPublicKey,
+          liquidationChainCode: vault.liquidationChainCode,
           vaultAddress: vault.vaultAddress,
           descriptor: vault.descriptor,
           collateralSats: vault.collateralSats,

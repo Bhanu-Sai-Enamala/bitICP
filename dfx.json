@@ -33,11 +33,7 @@
   "networks": {
     "local": {
       "bind": "127.0.0.1:4943",
-      "type": "ephemeral",
-      "bitcoin": {
-        "enabled": true,
-        "network": "testnet"
-      }
+      "type": "ephemeral"
     }
   },
   "output_env_file": ".dfx/local/canister_ids.env"

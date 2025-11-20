@@ -5,6 +5,7 @@ import mintRouter from './routes/mint.js';
 import vaultRouter from './routes/vaults.js';
 import withdrawRouter from './routes/withdraw.js';
 import authRouter from './routes/auth.js';
+import auctionRouter from './routes/auction.js';
 
 const app = express();
 
@@ -28,6 +29,7 @@ app.use('/auth', authRouter);
 app.use('/mint', mintRouter);
 app.use('/vaults', vaultRouter);
 app.use('/withdraw', withdrawRouter);
+app.use('/auction', auctionRouter);
 
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   console.error('Unhandled error', err);
