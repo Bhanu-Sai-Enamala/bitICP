@@ -96,12 +96,19 @@ router.use((req, res, next) => {
 });
 
 router.post('/build-psbt', async (req, res) => {
+  const userAgent = req.get('user-agent') ?? 'unknown';
+  console.info('[mint:build-psbt] user-agent', userAgent);
   console.info('[mint:build-psbt] raw body', JSON.stringify(req.body, null, 2));
   const normalizedBody = {
     ...req.body,
     inputsOverride: req.body.inputsOverride ?? req.body.inputs_override,
     outputsOverrideJson: req.body.outputsOverrideJson ?? req.body.outputs_override_json
   };
+  console.info('[mint:build-psbt] normalized key presence', {
+    hasProtocolKey: Boolean(normalizedBody.protocolPublicKey),
+    hasOracleKey: Boolean(normalizedBody.oraclePublicKey),
+    hasLiquidationKey: Boolean(normalizedBody.liquidationPublicKey)
+  });
   const parseResult = mintRequestSchema.safeParse(normalizedBody);
   if (!parseResult.success) {
     console.warn('[mint:build-psbt] validation failure', parseResult.error.format());
