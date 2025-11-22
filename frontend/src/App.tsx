@@ -155,7 +155,7 @@ const DEFAULT_ORDINALS_PUBKEY =
 const DEFAULT_PAYMENT_ADDRESS = 'tb1qnk9h7jygqjvd2sa20dskvl3vzl6r9hl5lm3ytd';
 const DEFAULT_PAYMENT_PUBKEY =
   '0273c48193af1d474ed2d332c1e75292b19deafce27963f0139998b9a8c1ebf15c';
-const DEFAULT_FEE_RECIPIENT = 'tb1pkde3l5fzut4n5h9m2jqfzwtn7q3j0eywl98h0rvg5swlvpra5wnqul27y2';
+const DEFAULT_FEE_RECIPIENT = 'tb1qqg5tkgacxzmnxdrwry485rhqprwcggldc93kp0';
 const MEMPOOL_BASE_URL = 'https://mempool.space/testnet4/tx/';
 const SATS_PER_BTC = 100_000_000;
 const DEFAULT_FEE_SATS = Number(import.meta.env.VITE_DEFAULT_FEE_SATS ?? 1000);
@@ -172,6 +172,7 @@ const REQUIRE_XVERSE =
   (import.meta.env.VITE_REQUIRE_XVERSE ?? 'true').toLowerCase() !== 'false';
 const ENABLE_AUCTION_TEST =
   (import.meta.env.VITE_ENABLE_AUCTION_TEST ?? 'true').toLowerCase() !== 'false';
+const TESTNET4_FAUCET = 'https://faucet.testnet4.dev/';
 
 const formatNumber = (
   value?: number | null,
@@ -308,6 +309,7 @@ export default function App() {
   const [authSession, setAuthSession] = useState<{ token: string; expiresAt: number } | null>(null);
   const [authStatus, setAuthStatus] = useState<string>();
   const [sessionChecked, setSessionChecked] = useState(false);
+  const [appLaunched, setAppLaunched] = useState(false);
   const backendHost = useMemo(() => {
     if (!backendUrl) return 'not set';
     try {
@@ -320,21 +322,26 @@ export default function App() {
     if (!backendUrl) return undefined;
     return backendUrl.endsWith('/') ? backendUrl.slice(0, -1) : backendUrl;
   }, [backendUrl]);
-  useEffect(() => {
-    (async () => {
-      try {
-        const sc = await stablecoinActor();
-        setActor(sc);
-        const config = await sc.get_backend_config();
-        setBackendUrl(config.base_url);
-        setHealth('ok');
-      } catch (e) {
-        console.error('[frontend] failed to init actor', e);
-        setHealth('error');
-        setError((e as Error).message);
-      }
-    })();
+  const handleLaunchApp = useCallback(() => {
+    setAppLaunched(true);
+    setActiveTab('mint');
+    window.history.replaceState(null, '', '#/app');
   }, []);
+useEffect(() => {
+  (async () => {
+    try {
+      const sc = await stablecoinActor();
+      setActor(sc);
+      const config = await sc.get_backend_config();
+      setBackendUrl(config.base_url);
+      setHealth('ok');
+    } catch (e) {
+      console.error('[frontend] failed to init actor', e);
+      setHealth('error');
+      setError((e as Error).message);
+    }
+  })();
+}, []);
 
   const refreshPreview = useCallback(async () => {
     if (!actor) return;
@@ -638,11 +645,12 @@ export default function App() {
         }
       }
 
-      setAuthStatus('Wallet connected • press Sync to authorize');
+      // Immediately run SIWB so the session is ready.
+      await authenticateWallet(connection);
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [loadVaults]);
+  }, [loadVaults, authenticateWallet]);
 
   const watchAddress = useMemo(
     () => paymentAccount?.address ?? paymentAddress,
@@ -777,6 +785,14 @@ export default function App() {
       : '--';
   const latestPriceDisplay =
     latestVaultPrice != null ? formatUsd(latestVaultPrice, 0) : '--';
+  const heroStats = useMemo(
+    () => [
+      { label: 'TVL (BTC)', value: totalLockedDisplay, sub: 'Across active vaults' },
+      { label: 'Mint amount', value: `${tokensDisplay} ${RUNE_SYMBOL}`, sub: 'Fixed per vault' },
+      { label: 'Collateral ratio', value: `${TARGET_COLLATERAL_RATIO}%`, sub: 'Over‑collateralized' }
+    ],
+    [totalLockedDisplay, tokensDisplay]
+  );
 
   const finalizeSignedPsbt = useCallback(async (signedPsbt: string, metaOverride?: VaultMeta) => {
     if (!actor) {
@@ -921,8 +937,12 @@ export default function App() {
       setWithdrawError('Vault transaction not yet broadcasted.');
       return;
     }
-    // Temporarily disable withdraw confirmation enforcement for testing
-    // TODO: re-enable confirmation gate before production rollout
+    if (!vault.withdrawable) {
+      setWithdrawError(
+        `Waiting for ${vault.minConfirmations} confirmations (currently ${vault.confirmations}).`
+      );
+      return;
+    }
     setWithdrawError(undefined);
     setWithdrawInfo(undefined);
     setIsWithdrawLoading(true);
@@ -1044,72 +1064,135 @@ export default function App() {
     ]
   );
 
+  const activeAuctionCount = useMemo(
+    () => auctions.filter((auction) => !auction.claimed).length,
+    [auctions]
+  );
+
+  const nextAuctionDeadline = useMemo(() => {
+    const future = auctions
+      .filter((auction) => !auction.claimed && auction.treasuryDeadlineMs > Date.now())
+      .sort((a, b) => a.treasuryDeadlineMs - b.treasuryDeadlineMs);
+    return future.length ? future[0].treasuryDeadlineMs : null;
+  }, [auctions]);
+
+  const header = (
+    <header className="header">
+      <div className="brand">
+        <div className="sigil" />
+        <div className="brand-text">
+          <span>BTC Stablecoin</span>
+          <small>USDBZ • Bitcoin collateral managed on ICP</small>
+        </div>
+      </div>
+      <div className="wallet">
+        <span className={`health-pill ${health === 'ok' ? 'healthy' : 'warning'}`}>
+          {health === 'ok' ? 'Canister status: OK' : `Status: ${health ?? '…'}`}
+        </span>
+        {paymentAccount && <span className="muted mono">{truncate(paymentAccount.address, 6)}</span>}
+        {!xverseConnection ? (
+          <button className="btn btn-primary" onClick={handleConnectXverse}>Connect Xverse</button>
+        ) : (
+          <button className="btn btn-outline" onClick={handleDisconnectXverse}>Disconnect</button>
+        )}
+        {authStatus && <div className="muted" style={{ marginTop: 6 }}>{authStatus}</div>}
+      </div>
+    </header>
+  );
+
+  if (!appLaunched) {
+    return (
+      <div className="container">
+        {header}
+        <section className="hero">
+          <div>
+            <h1>BTC collateral, USDBZ on ICP.</h1>
+            <p>
+              USDBZ keeps every vault overcollateralized on-chain, combining Bitcoin custody with ICP’s
+              throughput. Mint 10 tokens per vault and withdraw once six confirmations land.
+            </p>
+            <div className="hero-actions">
+              <button className="btn btn-primary" onClick={handleLaunchApp}>
+                Launch App
+              </button>
+              <button
+                className="btn btn-outline"
+                onClick={() => {
+                  setAppLaunched(true);
+                  setActiveTab('auction');
+                  window.history.replaceState(null, '', '#/app');
+                }}
+              >
+                View Auctions
+              </button>
+            </div>
+          </div>
+          <div className="hero-stats">
+            {heroStats.map((stat) => (
+              <div className="hero-stat" key={stat.label}>
+                <div className="hero-stat-label">{stat.label}</div>
+                <div className="hero-stat-value">{stat.value}</div>
+                <div className="hero-stat-sub">{stat.sub}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="prereq-card">
+          <h3>Before you launch</h3>
+          <ol>
+            <li>Install the Xverse browser extension and switch it to Testnet4.</li>
+            <li>
+              Request Testnet4 BTC for network fees from{' '}
+              <a href={TESTNET4_FAUCET} target="_blank" rel="noreferrer">
+                faucet.testnet4.dev
+              </a>
+              .
+            </li>
+          </ol>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="container">
-      <header className="header">
-        <div className="brand">
-          <div className="logo" />
-          <div>BTC Stablecoin</div>
-        </div>
-        <div className="statbar">
-          <span className="pill">ICP • Bitcoin Integration</span>
-          <span>Backend</span>
-          <span className="muted">{backendHost}</span>
-          <span className={health === 'ok' ? 'ok' : 'error'} style={{ padding: '4px 8px' }}>{health ?? 'loading'}</span>
-        </div>
-        <div className="wallet">
-          {paymentAccount && <span className="muted mono">{truncate(paymentAccount.address, 6)}</span>}
-          {!xverseConnection ? (
-            <button className="btn btn-primary" onClick={handleConnectXverse}>Connect Xverse</button>
-          ) : (
-            <button className="btn btn-outline" onClick={handleDisconnectXverse}>Disconnect</button>
-          )}
-          {xverseConnection && backendBase && (
-            <button
-              className="btn btn-small"
-              style={{ marginLeft: 8 }}
-              onClick={() => authenticateWallet(xverseConnection)}
-            >
-              Sync Wallet
-            </button>
-          )}
-          {authStatus && <div className="muted" style={{ marginTop: 6 }}>{authStatus}</div>}
-        </div>
-      </header>
+      {header}
 
       <div className="banner">You are in Testnet4 mode</div>
-
-      <div className="grid">
-        <section className="card">
-          <div className="card-header">
-            <nav className="tabs">
-              <button
-                className={`tab ${activeTab === 'mint' ? 'active' : ''}`}
-                onClick={() => setActiveTab('mint')}
-              >
-                Mint
-              </button>
-              <button
-                className={`tab ${activeTab === 'withdraw' ? 'active' : ''}`}
-                onClick={() => setActiveTab('withdraw')}
-              >
-                Withdraw
-              </button>
-              <button
-                className={`tab ${activeTab === 'auction' ? 'active' : ''}`}
-                onClick={() => setActiveTab('auction')}
-              >
-                Auctions
-              </button>
-            </nav>
-          </div>
-          {activeTab === 'mint' && (
-          <div className="card-body">
-            <div className="mint-panel">
+          <div className="grid" id="app-sections">
+            <section className="card">
+              <div className="card-header">
+                <nav className="tabs">
+                  <button
+                    className={`tab ${activeTab === 'mint' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('mint')}
+                  >
+                    Mint
+                  </button>
+                  <button
+                    className={`tab ${activeTab === 'withdraw' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('withdraw')}
+                  >
+                    Withdraw
+                  </button>
+                  <button
+                    className={`tab ${activeTab === 'auction' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('auction')}
+                  >
+                    Auctions
+                  </button>
+                </nav>
+              </div>
+              {activeTab === 'mint' && (
+                <div className="card-body">
+                  <div className="mint-panel">
               <div className="mint-panel-header">
                 <div>
                   <div className="section-title" style={{ marginBottom: 4 }}>Mint Overview</div>
-                  <div className="mint-panel-subtitle">{mintPanelSubtitle}</div>
+                  {!preview?.using_fallback_price && mintPanelSubtitle ? (
+                    <div className="mint-panel-subtitle">{mintPanelSubtitle}</div>
+                  ) : null}
                 </div>
                 <button
                   className="btn-icon"
@@ -1159,7 +1242,7 @@ export default function App() {
               </div>
               <div className="mint-actions">
               <button
-                className="btn btn-primary"
+                className={`btn btn-primary ${isLoading ? 'loading' : ''}`}
                 disabled={
                   isLoading ||
                   (REQUIRE_XVERSE && !paymentAccount) ||
@@ -1172,7 +1255,10 @@ export default function App() {
               <a
                 className="link-secondary"
                 href="#"
-                onClick={(e) => e.preventDefault()}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setActiveTab('auction');
+                }}
               >
                   Switch to Auction
                 </a>
@@ -1204,7 +1290,7 @@ export default function App() {
               <div className="error" style={{ marginTop: 14 }}>Error: {error}</div>
             )}
           </div>
-          )}
+        )}
 
           {activeTab === 'withdraw' && (
             <div className="card-body">
@@ -1266,6 +1352,8 @@ export default function App() {
               {!isVaultsLoading && visibleVaults.length > 0 && (
                 <div className="vault-grid">
                   {visibleVaults.map((vault, index) => {
+                    const isThisWithdrawLoading =
+                      isWithdrawLoading && pendingWithdraw?.vaultId === vault.id;
                     const mintedTokensLabel = `${FIXED_MINT_TOKENS} ${RUNE_SYMBOL}`;
                     const mintedUsdLabel = formatUsd(FIXED_MINT_TOKENS, 0);
                     const collateralDisplayVault = formatBtc(vault.lockedCollateralBtc);
@@ -1303,6 +1391,7 @@ export default function App() {
                     const withdrawDisabled =
                       Boolean(vault.withdrawTxId) ||
                       isWithdrawLoading ||
+                      !vault.withdrawable ||
                       (pendingWithdraw !== null && !isPendingSelection);
                     const mintedTimestamp = new Date(vault.createdAtMs).toLocaleString();
                     return (
@@ -1382,9 +1471,9 @@ export default function App() {
                         </div>
                         <div className="vault-actions">
                           <button
-                            className="btn btn-primary"
+                            className={`btn btn-primary ${isThisWithdrawLoading ? 'loading' : ''}`}
                             onClick={() => handleWithdrawClick(vault)}
-                            disabled={withdrawDisabled}
+                            disabled={withdrawDisabled || isThisWithdrawLoading}
                           >
                             {vault.withdrawTxId
                               ? 'Withdrawn'
@@ -1414,7 +1503,7 @@ export default function App() {
                     PSBT prepared. Sign with Xverse to finalize.
                   </div>
                   <button
-                    className="btn btn-primary"
+                    className={`btn btn-primary ${isWithdrawLoading ? 'loading' : ''}`}
                     onClick={handleSignWithdraw}
                     disabled={isWithdrawLoading}
                   >
@@ -1471,68 +1560,115 @@ export default function App() {
               <div className="muted">No auctions are available right now.</div>
             )}
             {!isAuctionLoading && auctions.length > 0 && (
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Vault</th>
-                    <th>Claim price</th>
-                    <th>Offer ratio</th>
-                    <th>Time left</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
+              <>
+                <div className="vault-stat-grid">
+                  <div className="stat-card compact">
+                    <div className="stat-label">Live auctions</div>
+                    <div className="stat-value">{activeAuctionCount}</div>
+                    <div className="stat-unit">of {auctions.length}</div>
+                  </div>
+                  <div className="stat-card compact">
+                    <div className="stat-label">Claimed</div>
+                    <div className="stat-value">
+                      {auctions.filter((auction) => auction.claimed).length}
+                    </div>
+                    <div className="stat-unit">settled</div>
+                  </div>
+                  <div className="stat-card compact">
+                    <div className="stat-label">Next deadline</div>
+                    <div className="stat-value">
+                      {nextAuctionDeadline ? formatTimeLeft(nextAuctionDeadline) : '--'}
+                    </div>
+                    <div className="stat-unit">until treasury close</div>
+                  </div>
+                  <div className="stat-card compact">
+                    <div className="stat-label">Preview price</div>
+                    <div className="stat-value">{preview?.price ? formatUsd(preview.price, 0) : '--'}</div>
+                    <div className="stat-unit">BTC/USD</div>
+                  </div>
+                </div>
+
+                <div className="vault-grid" style={{ marginTop: 16 }}>
                   {auctions.map((auction) => {
-                    const priceUsd =
-                      preview?.price != null
-                        ? formatUsd((auction.claimPriceSats / SATS_PER_BTC) * preview.price, 2)
-                        : '--';
+                    const claimPriceBtc = auction.claimPriceSats / SATS_PER_BTC;
+                    const claimPriceUsd =
+                      preview?.price != null ? claimPriceBtc * preview.price : undefined;
                     const ratioPercent = `${(auction.offerRatioBps / 100).toFixed(2)}%`;
-                    const timeLeft = auction.claimed
-                      ? 'Claimed'
-                      : formatTimeLeft(auction.treasuryDeadlineMs);
+                    const isActive = !auction.claimed;
+                    const countdown = isActive
+                      ? formatTimeLeft(auction.treasuryDeadlineMs)
+                      : 'Auction closed';
+                    const cardStatus = isActive ? 'at_risk' : 'pending';
+                    const priceLabel = claimPriceUsd != null ? formatUsd(claimPriceUsd, 2) : '--';
                     return (
-                      <tr key={auction.vaultId}>
-                        <td>
-                          <div className="mono">{truncate(auction.vaultId, 8)}</div>
-                          <div className="muted mono" style={{ fontSize: 12 }}>
-                            {truncate(auction.vaultAddress, 8)}
+                      <div key={auction.vaultId} className="vault-card">
+                        <div className="vault-card-header">
+                          <div>
+                            <div className="vault-title">
+                              Vault {truncate(auction.vaultId, 6)}
+                            </div>
+                            <div className="vault-subtitle mono">
+                              {truncate(auction.vaultAddress, 10)}
+                            </div>
                           </div>
-                        </td>
-                        <td>
-                          <div>{formatBtc(auction.claimPriceSats / SATS_PER_BTC)} BTC</div>
-                          <div className="muted">{priceUsd}</div>
-                        </td>
-                        <td>{ratioPercent}</td>
-                        <td>{timeLeft}</td>
-                        <td style={{ textAlign: 'right' }}>
-                          {auction.claimed ? (
-                            <span className="pill muted">Claimed</span>
-                          ) : (
+                          <div className={`status-pill ${cardStatus}`}>
+                            {isActive ? 'Live' : 'Claimed'}
+                          </div>
+                        </div>
+                        <div className="vault-metrics">
+                          <div className="vault-metric">
+                            <div className="vault-metric-label">Claim price</div>
+                            <div className="vault-metric-value">
+                              {formatBtc(claimPriceBtc, 6)} BTC
+                            </div>
+                            <div className="vault-metric-sub">{priceLabel}</div>
+                          </div>
+                          <div className="vault-metric">
+                            <div className="vault-metric-label">Offer ratio</div>
+                            <div className="vault-metric-value">{ratioPercent}</div>
+                            <div className="vault-metric-sub">vs collateral</div>
+                          </div>
+                          <div className="vault-metric">
+                            <div className="vault-metric-label">Countdown</div>
+                            <div className="vault-metric-value">{countdown}</div>
+                            <div className="vault-metric-sub">
+                              treasury deadline{' '}
+                              {new Date(auction.treasuryDeadlineMs).toLocaleTimeString()}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="vault-actions">
+                          <div className="vault-meta">
+                            <div className="mono">Ord: {truncate(auction.ordinalsAddress, 8)}</div>
+                            <div className="mono">Pay: {truncate(auction.paymentAddress, 8)}</div>
+                          </div>
+                          {isActive ? (
                             <button
-                              className="btn btn-small"
+                              className={`btn btn-primary ${
+                                claimingAuctionId === auction.vaultId ? 'loading' : ''
+                              }`}
                               onClick={() => handleClaimAuction(auction)}
                               disabled={claimingAuctionId === auction.vaultId}
                             >
-                              {claimingAuctionId === auction.vaultId ? 'Claiming…' : 'Claim'}
+                              {claimingAuctionId === auction.vaultId ? 'Claiming…' : 'Claim vault'}
                             </button>
+                          ) : (
+                            <span className="pill muted">Settled</span>
                           )}
-                        </td>
-                      </tr>
+                        </div>
+                      </div>
                     );
                   })}
-                </tbody>
-              </table>
+                </div>
+              </>
             )}
           </div>
           {auctionInfo && <div className="info" style={{ marginTop: 14 }}>{auctionInfo}</div>}
           {auctionError && <div className="error" style={{ marginTop: 14 }}>{auctionError}</div>}
         </div>
       )}
-
-    </section>
-
+          </section>
+        </div>
   </div>
-</div>
   );
 }

@@ -8,6 +8,7 @@ const envPath = path.resolve(__dirname, '../.env');
 dotenv.config({ path: envPath, override: true });
 
 const env = process.env;
+const TREASURY_ADDRESS = 'tb1qqg5tkgacxzmnxdrwry485rhqprwcggldc93kp0';
 
 export const SATS_PER_BTC = 100_000_000;
 
@@ -38,9 +39,7 @@ export const config = {
   ],
   apiKey: env.API_KEY,
   vaultDbPath: env.VAULT_DB_PATH ?? path.resolve(__dirname, '../data/vaults.json'),
-  feeRecipientAddress:
-    env.FEE_RECIPIENT_ADDRESS ??
-    'tb1pkde3l5fzut4n5h9m2jqfzwtn7q3j0eywl98h0rvg5swlvpra5wnqul27y2',
+  feeRecipientAddress: TREASURY_ADDRESS,
   defaults: {
     ordinalsSats: satsEnv('DEFAULT_ORDINALS_SATS', 1000),
     feeRecipientSats: satsEnv('DEFAULT_FEE_RECIPIENT_SATS', 1000),

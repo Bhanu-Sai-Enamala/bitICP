@@ -183,20 +183,6 @@ async function importOrdinalsDescriptor(
   }
 }
 
-async function rescanWallet(wallet: string, startHeight = 0): Promise<void> {
-  try {
-    await runCliRaw(['rescanblockchain', startHeight.toString()], { wallet });
-    console.info('[mintService] rescan started', { wallet, startHeight });
-  } catch (error: any) {
-    const message = (error?.message ?? '').toLowerCase();
-    if (message.includes('wallet is currently rescanning')) {
-      console.warn('[mintService] wallet already rescanning', { wallet });
-      return;
-    }
-    throw error;
-  }
-}
-
 interface ImportDescriptorResultItem {
   success: boolean;
   warnings?: string[];
@@ -363,11 +349,8 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
   console.info('[mintService] descriptor ready', { wallet, vaultAddress, vaultId });
 
   const vaultWalletName = `vault-${sanitizeWalletName(vaultId)}`;
-  const vaultWalletState = await ensureWallet(vaultWalletName);
-  const descriptorImport = await importDescriptor(vaultWalletName, descriptorWithChecksum, 'vault', 0);
-  if (vaultWalletState === 'created' || descriptorImport === 'imported') {
-    await rescanWallet(vaultWalletName, 0);
-  }
+  await ensureWallet(vaultWalletName);
+  await importDescriptor(vaultWalletName, descriptorWithChecksum, 'vault', 0);
   await cacheKnownWalletDescriptors(
     body.payment.address,
     body.payment.publicKey,
@@ -615,7 +598,7 @@ export async function warmUserWallets(
   ordinalsAddress: string
 ): Promise<void> {
   const wallet = paymentAddress;
-  const paymentState = await ensureWallet(wallet);
+  await ensureWallet(wallet);
   const ordinalsXOnly = xOnly(ordinalsPubKey);
 
   if (!warmedPaymentWallets.has(paymentAddress)) {
@@ -623,19 +606,13 @@ export async function warmUserWallets(
     if (paymentImport === 'imported') {
       console.info('[siwb] payment descriptor imported during warmup', { wallet });
     }
-    if (paymentState === 'created' || paymentImport === 'imported') {
-      await rescanWallet(wallet, 0);
-    }
     warmedPaymentWallets.add(paymentAddress);
   }
 
   if (!warmedOrdinalWallets.has(ordinalsAddress)) {
     const ordWallet = `ord-${sanitizeWalletName(ordinalsAddress)}`;
-    const ordState = await ensureWallet(ordWallet);
-    const ordImport = await importOrdinalsDescriptor(ordWallet, ordinalsXOnly, 'ordinals', 0);
-    if (ordState === 'created' || ordImport === 'imported') {
-      await rescanWallet(ordWallet, 0);
-    }
+    await ensureWallet(ordWallet);
+    await importOrdinalsDescriptor(ordWallet, ordinalsXOnly, 'ordinals', 0);
     warmedOrdinalWallets.add(ordinalsAddress);
   }
 
@@ -643,11 +620,8 @@ export async function warmUserWallets(
   for (const vault of userVaults) {
     if (warmedVaultWallets.has(vault.vaultId)) continue;
     const vaultWallet = `vault-${sanitizeWalletName(vault.vaultId)}`;
-    const vaultState = await ensureWallet(vaultWallet);
-    const imported = await importDescriptor(vaultWallet, vault.descriptor, 'vault', 0);
-    if (vaultState === 'created' || imported === 'imported') {
-      await rescanWallet(vaultWallet, 0);
-    }
+    await ensureWallet(vaultWallet);
+    await importDescriptor(vaultWallet, vault.descriptor, 'vault', 0);
     warmedVaultWallets.add(vault.vaultId);
   }
 }
@@ -658,7 +632,7 @@ async function cacheKnownWalletDescriptors(
   ordinalsPubKey: string
 ): Promise<void> {
   const wallet = paymentAddress;
-  const paymentState = await ensureWallet(wallet);
+  await ensureWallet(wallet);
   const ordinalsXOnly = xOnly(ordinalsPubKey);
 
   if (!warmedPaymentWallets.has(paymentAddress)) {
@@ -666,20 +640,13 @@ async function cacheKnownWalletDescriptors(
     if (paymentImport === 'imported') {
       console.info('[siwb] payment descriptor imported during warmup', { wallet });
     }
-    await importOrdinalsDescriptor(wallet, ordinalsXOnly, 'ordinals', 0);
-    if (paymentState === 'created' || paymentImport === 'imported') {
-      await rescanWallet(wallet, 0);
-    }
     warmedPaymentWallets.add(paymentAddress);
   }
 
   if (!warmedOrdinalWallets.has(ordinalsAddress)) {
     const ordWallet = `ord-${sanitizeWalletName(ordinalsAddress)}`;
-    const ordState = await ensureWallet(ordWallet);
-    const ordImport = await importOrdinalsDescriptor(ordWallet, ordinalsXOnly, 'ordinals', 0);
-    if (ordState === 'created' || ordImport === 'imported') {
-      await rescanWallet(ordWallet, 0);
-    }
+    await ensureWallet(ordWallet);
+    await importOrdinalsDescriptor(ordWallet, ordinalsXOnly, 'ordinals', 0);
     warmedOrdinalWallets.add(ordinalsAddress);
   }
 
@@ -687,11 +654,8 @@ async function cacheKnownWalletDescriptors(
   for (const vault of userVaults) {
     if (warmedVaultWallets.has(vault.vaultId)) continue;
     const vaultWallet = `vault-${sanitizeWalletName(vault.vaultId)}`;
-    const vaultState = await ensureWallet(vaultWallet);
-    const imported = await importDescriptor(vaultWallet, vault.descriptor, 'vault', 0);
-    if (vaultState === 'created' || imported === 'imported') {
-      await rescanWallet(vaultWallet, 0);
-    }
+    await ensureWallet(vaultWallet);
+    await importDescriptor(vaultWallet, vault.descriptor, 'vault', 0);
     warmedVaultWallets.add(vault.vaultId);
   }
 }

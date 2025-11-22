@@ -236,6 +236,9 @@ export const idlFactory = ({ IDL }) => {
     'set_backend_config' : IDL.Func([IDL.Text, IDL.Opt(IDL.Text)], [], []),
     'set_backend_broadcast_mode' : IDL.Func([IDL.Bool, IDL.Bool], [], []),
     'set_local_testing_mode' : IDL.Func([IDL.Bool], [], []),
+    'set_auction_timer_enabled' : IDL.Func([IDL.Bool], [], []),
+    'get_auction_timer_enabled' : IDL.Func([], [IDL.Bool], ['query']),
+    'set_oracle_price_mode' : IDL.Func([IDL.Bool], [], []),
     'set_fee_config' : IDL.Func(
         [IDL.Nat64, IDL.Nat64, IDL.Text, IDL.Text],
         [],

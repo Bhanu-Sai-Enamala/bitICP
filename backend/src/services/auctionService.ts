@@ -11,14 +11,18 @@ import { runCliJson, runCliRaw } from '../utils/bitcoinCli.js';
 import { vaultStore, type VaultRecord, type AuctionState } from './vaultStore.js';
 import { sanitizeWalletName } from './mintService.js';
 
-interface ListUnspentEntry {
+interface ScantxoutsetUnspent {
   txid: string;
   vout: number;
-  address: string;
+  scriptPubKey: string;
   amount: number;
-  spendable: boolean;
-  solvable: boolean;
-  safe: boolean;
+  height: number;
+  desc?: string;
+}
+
+interface ScantxoutsetResult {
+  success: boolean;
+  unspents?: ScantxoutsetUnspent[];
 }
 
 interface RawTxInfo {
@@ -87,14 +91,16 @@ export async function prepareAuctionClaim(
   const paymentWallet = sanitizeWalletName(body.payment.address);
   const vaultWallet = `vault-${sanitizeWalletName(body.vaultId)}`;
 
+  const ordXOnly = xOnly(body.ordinals.publicKey);
+
   await ensureWallet(ordWallet);
   await ensureWallet(paymentWallet);
   await ensureWallet(vaultWallet);
-  await importPaymentDescriptor(paymentWallet, body.payment.publicKey, 'now');
-  await importOrdinalsDescriptor(ordWallet, xOnly(body.ordinals.publicKey), 'ordinals', 'now');
+  await importPaymentDescriptor(paymentWallet, body.payment.publicKey, 0);
+  await importOrdinalsDescriptor(ordWallet, ordXOnly, 'ordinals', 0);
   await importVaultDescriptor(vaultWallet, vault.descriptor);
 
-  const runeUtxo = await selectRuneUtxo(ordWallet);
+  const runeUtxo = await selectRuneUtxo(body.ordinals.address, ordXOnly);
   const mintTx = await runCliJson<RawTxInfo>(['getrawtransaction', vault.txid, 'true']);
   const vaultOutput = mintTx.vout.find((entry) => matchesAddress(entry, vault.vaultAddress));
   if (!vaultOutput) {
@@ -236,19 +242,9 @@ async function ensureWallet(name: string): Promise<void> {
     const directory = await runCliJson<{ wallets: { name: string }[] }>(['listwalletdir']);
     const exists = (directory.wallets ?? []).some((entry) => entry.name === name);
     if (!exists) {
-      await runCliRaw([
-        'createwallet',
-        name,
-        'true',
-        'true',
-        '',
-        'false',
-        'true',
-        'false'
-      ]);
-    } else {
-      await runCliRaw(['loadwallet', name]);
+      throw new Error('wallet_not_warmed');
     }
+    await runCliRaw(['loadwallet', name]);
   }
   warmedWallets.add(name);
 }
@@ -324,12 +320,28 @@ async function importVaultDescriptor(wallet: string, descriptor: string) {
   }
 }
 
-async function selectRuneUtxo(wallet: string): Promise<ListUnspentEntry> {
-  const utxos = await runCliJson<ListUnspentEntry[]>(['listunspent', '0', '9999999'], { wallet });
-  for (const utxo of utxos) {
-    if (utxo.vout !== 1 || !utxo.spendable) continue;
+async function descriptorWithChecksum(desc: string): Promise<string> {
+  const info = await runCliJson<{ descriptor: string }>(['getdescriptorinfo', desc]);
+  return info.descriptor;
+}
+
+async function selectRuneUtxo(
+  ordinalsAddress: string,
+  ordinalsXOnly: string
+): Promise<{ txid: string; vout: number }> {
+  const descriptor = await descriptorWithChecksum(`tr(${ordinalsXOnly})`);
+  const scanPayload = JSON.stringify([{ desc: descriptor }]);
+  const scanResult = await runCliJson<ScantxoutsetResult>(['scantxoutset', 'start', scanPayload]);
+  const scriptInfo = await runCliJson<{ scriptPubKey?: string }>(['getaddressinfo', ordinalsAddress]);
+  const expectedScript = scriptInfo.scriptPubKey?.toLowerCase();
+  const candidates = scanResult.unspents ?? [];
+  for (const utxo of candidates) {
+    if (utxo.vout !== 1) continue;
+    if (expectedScript && utxo.scriptPubKey?.toLowerCase() !== expectedScript) {
+      continue;
+    }
     if (await isRuneUtxo(utxo.txid)) {
-      return utxo;
+      return { txid: utxo.txid, vout: utxo.vout };
     }
   }
   throw new Error('insufficient_rune_balance');

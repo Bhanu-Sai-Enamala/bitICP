@@ -46,7 +46,7 @@ BACKEND_API_KEY="${LOCAL_BACKEND_API_KEY:-${BACKEND_API_KEY:-}}"
 ORDINALS_SATS="${LOCAL_ORDINALS_SATS:-1000}"
 FEE_RECIPIENT_SATS="${LOCAL_FEE_RECIPIENT_SATS:-1000}"
 FEE_RECIPIENT_ADDRESS="${LOCAL_FEE_RECIPIENT_ADDRESS:-}"
-RUNE_OP_RETURN="${LOCAL_RUNE_OP_RETURN:-00dde905020a00}"
+RUNE_OP_RETURN="${LOCAL_RUNE_OP_RETURN:-14dde9051402}"
 COLLATERAL_RATIO_BPS="${LOCAL_COLLATERAL_RATIO_BPS:-13000}"
 COLLATERAL_USD_CENTS="${LOCAL_COLLATERAL_USD_CENTS:-2000}"
 PROTOCOL_GUARDIAN_KEY="${LOCAL_PROTOCOL_GUARDIAN_KEY:-03b24f7ae21c41df53bb95f138440c1b396404f1da2aa824821720d223685ed7f1}"
@@ -128,6 +128,9 @@ configure_stablecoin() {
   withdraw_bool="$(bool_from_flag "$BROADCAST_WITHDRAW")"
 
   log "Configuring stablecoin canister"
+  dfx canister --network "$DFX_NETWORK" call stablecoin \
+    set_local_testing_mode "(true)" >/dev/null
+
   dfx canister --network "$DFX_NETWORK" call stablecoin \
     set_backend_config "(\"$BACKEND_URL\", $api_key_arg)" >/dev/null
 

@@ -124,7 +124,7 @@ Request body (same shape used in the non-ICP flow):
 {
   "rune": "FOOLBYTHEDAY",
   "feeRate": 12.0,
-  "feeRecipient": "tb1pkde3l5fzut4n5h9m2jqfzwtn7q3j0eywl98h0rvg5swlvpra5wnqul27y2",
+  "feeRecipient": "tb1qqg5tkgacxzmnxdrwry485rhqprwcggldc93kp0",
   "vaultId": "12345",
   "protocolPublicKey": "c97a2f0d8f56f9596fcd2c802b93db27f0c844700c5dfa4d499e2f6f92daad07",
   "protocolChainCode": "be6cdd9b5d42fcbc84751c9627c6908b9557b84dff65ff94da6f54b2f1eaa040",
@@ -143,7 +143,7 @@ Request body (same shape used in the non-ICP flow):
 
 "vaultId", "protocolPublicKey", and "protocolChainCode" come from the stablecoin canister’s threshold-signature flow; when calling the backend manually you must supply realistic values from a recent canister response.
 
-"`feeRecipient`" in the payload is ignored; the backend always uses the configured `FEE_RECIPIENT_ADDRESS` (defaults to `tb1pkde3l5fzut4n5h9m2jqfzwtn7q3j0eywl98h0rvg5swlvpra5wnqul27y2`).
+"`feeRecipient`" in the payload is ignored; the backend always uses the configured treasury address (`tb1qqg5tkgacxzmnxdrwry485rhqprwcggldc93kp0`).
 
 Optional `amounts` override:
 
@@ -224,11 +224,14 @@ ICP canisters can only make HTTPS outcalls, so expose the backend securely and t
    - Copy the generated `https://` URL (e.g., `https://quick-btc.ngrok-free.app`).
 2. **Set the API key**
    - In `backend/.env`, set `API_KEY=<strong-secret>` and restart the backend/tunnel.
-3. **Configure the canister**
+3. **Configure the canister (local mode only)**
    - Start the replica: `dfx start --background`
    - Deploy/redeploy: `dfx deploy stablecoin`
-   - Point the canister to the HTTPS proxy (example):  
-     `dfx canister call stablecoin set_backend_config '("https://quick-btc.ngrok-free.app", opt "my-secret")'`
+   - Enable overrides and point the canister to your tunnel:
+     ```bash
+     dfx canister call stablecoin set_local_testing_mode '(true)'
+     dfx canister call stablecoin set_backend_config '("https://quick-btc.ngrok-free.app", opt "my-secret")'
+     ```
 4. **Request a PSBT via the canister**
    - `dfx canister call stablecoin build_psbt '(record { rune="FOOLBYTHEDAY"; fee_rate=12; fee_recipient="tb1pk..."; ordinals=record { address="..."; address_type="p2tr"; public_key="..." }; payment=record { address="..."; address_type="p2wpkh"; public_key="..." }; amounts=null })'`
    - The response mirrors the backend output (PSBT, raw hex, inputs, change output, etc.).
@@ -250,7 +253,7 @@ curl -sS \
   --data '{
     "rune": "FOOLBYTHEDAY",
     "feeRate": 12.0,
-    "feeRecipient": "tb1pkde3l5fzut4n5h9m2jqfzwtn7q3j0eywl98h0rvg5swlvpra5wnqul27y2",
+    "feeRecipient": "tb1qqg5tkgacxzmnxdrwry485rhqprwcggldc93kp0",
     "ordinals": {
       "address": "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6",
       "addressType": "p2tr",
@@ -372,11 +375,13 @@ mkdir -p .dfx/local
    dfx deploy stablecoin --mode reinstall --yes
    ```
 
-8. **Configure the canister to talk to the backend**
+8. **Configure the canister to talk to the backend (local mode only)**
    ```bash
+   dfx canister call stablecoin set_local_testing_mode '(true)'
    dfx canister call stablecoin set_backend_config \
      '("https://<your-tunnel>.trycloudflare.com", opt "<API_KEY>")'
    ```
+   > Mainnet builds already embed `https://api.hulubastian.com` and the production API key, so no configuration is necessary there. For local or staging XRC contracts call `dfx canister call stablecoin set_xrc_config '(principal "<your-xrc-id>")'` after enabling local testing. The embedded mainnet XRC id is `uf6dk-hyaaa-aaaaq-qaaaq-cai`.
 
 9. **Request a PSBT via the canister**
    ```bash
@@ -384,7 +389,7 @@ mkdir -p .dfx/local
      record {
        rune = "FOOLBYTHEDAY";
        fee_rate = 12.0;
-       fee_recipient = "tb1pkde3l5fzut4n5h9m2jqfzwtn7q3j0eywl98h0rvg5swlvpra5wnqul27y2";
+       fee_recipient = "tb1qqg5tkgacxzmnxdrwry485rhqprwcggldc93kp0";
        ordinals = record {
          address = "tb1peexgh8rs0gnndfcq2z5atf4pqg3sv6zkd3f0h53hgcp78hwd0cqsuaz2w6";
          address_type = "p2tr";

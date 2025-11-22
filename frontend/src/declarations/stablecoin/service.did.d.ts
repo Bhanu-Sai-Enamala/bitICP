@@ -230,8 +230,11 @@ export interface _SERVICE {
   >,
   'set_backend_config' : ActorMethod<[string, [] | [string]], undefined>,
   'set_backend_broadcast_mode' : ActorMethod<[boolean, boolean], undefined>,
+  'set_auction_timer_enabled' : ActorMethod<[boolean], undefined>,
   'set_fee_config' : ActorMethod<[bigint, bigint, string, string], undefined>,
   'set_local_testing_mode' : ActorMethod<[boolean], undefined>,
+  'get_auction_timer_enabled' : ActorMethod<[], boolean>,
+  'set_oracle_price_mode' : ActorMethod<[boolean], undefined>,
   'set_protocol_keys' : ActorMethod<[string, string, string], undefined>,
   'set_schnorr_key' : ActorMethod<
     [string],

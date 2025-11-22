@@ -205,6 +205,9 @@ service : {
   set_backend_config: (text, opt text) -> ();
   set_backend_broadcast_mode: (bool, bool) -> ();
   set_local_testing_mode: (bool) -> ();
+  set_auction_timer_enabled: (bool) -> ();
+  get_auction_timer_enabled: () -> (bool) query;
+  set_oracle_price_mode: (bool) -> ();
   set_fee_config: (nat64, nat64, text, text) -> ();
   set_protocol_keys: (text, text, text) -> ();
   set_schnorr_key: (text) -> (variant { Ok : null; Err : text });
