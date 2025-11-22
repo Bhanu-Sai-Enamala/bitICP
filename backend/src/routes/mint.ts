@@ -75,12 +75,12 @@ const mintRequestSchema = z.object({
     .transform((v) => v.toLowerCase()),
   amounts: z
     .object({
-      ordinalsSats: z.number().int().positive(),
-      feeRecipientSats: z.number().int().positive(),
-      vaultSats: z.number().int().positive()
+      ordinalsSats: z.number().int().positive().optional(),
+      feeRecipientSats: z.number().int().positive().optional(),
+      vaultSats: z.number().int().positive().optional()
     })
-    .partial()
-    .nullish(),
+    .optional()
+    .nullable(),
   inputsOverride: z.array(overrideInputSchema).optional(),
   outputsOverrideJson: z.string().optional()
 });

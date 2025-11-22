@@ -309,7 +309,7 @@ fn cancel_auction_timer() {
 
 #[update]
 fn set_backend_config(base_url: String, api_key: Option<String>) {
-    assert_local_testing_enabled();
+    assert_controller();
     let trimmed = base_url.trim();
     if !trimmed.starts_with("https://") {
         ic_cdk::trap("backend base URL must start with https://");
@@ -327,7 +327,7 @@ fn set_backend_config(base_url: String, api_key: Option<String>) {
 
 #[update]
 fn set_backend_broadcast_mode(mint_via_backend: bool, withdraw_via_backend: bool) {
-    assert_local_testing_enabled();
+    assert_controller();
     SETTINGS.with(|settings| {
         let mut st = settings.borrow_mut();
         st.backend.broadcast_mint_via_backend = mint_via_backend;
@@ -337,6 +337,7 @@ fn set_backend_broadcast_mode(mint_via_backend: bool, withdraw_via_backend: bool
 
 #[update]
 fn set_local_testing_mode(enabled: bool) {
+    assert_controller();
     SETTINGS.with(|settings| {
         settings.borrow_mut().local_testing_mode = enabled;
     });
@@ -344,6 +345,7 @@ fn set_local_testing_mode(enabled: bool) {
 
 #[update]
 fn set_oracle_price_mode(use_cached: bool) {
+    assert_controller();
     SETTINGS.with(|settings| {
         settings.borrow_mut().oracle_use_cached_price = use_cached;
     });
@@ -616,7 +618,7 @@ fn set_fee_config(
     fee_recipient_address: String,
     rune_op_return_hex: String,
 ) {
-    assert_local_testing_enabled();
+    assert_controller();
     SETTINGS.with(|settings| {
         let mut st = settings.borrow_mut();
         st.backend.ordinals_sats = ordinals_sats;
@@ -628,7 +630,7 @@ fn set_fee_config(
 
 #[update]
 fn set_protocol_keys(guardian_internal_key: String, vault_key_a: String, vault_key_b: String) {
-    assert_local_testing_enabled();
+    assert_controller();
     if guardian_internal_key.trim().is_empty()
         || vault_key_a.trim().is_empty()
         || vault_key_b.trim().is_empty()
@@ -765,13 +767,13 @@ async fn xrc_btc_usd_price() -> Result<(f64, Option<u64>), String> {
 
 #[update]
 fn set_xrc_config(xrc_id: Principal) {
-    assert_local_testing_enabled();
+    assert_controller();
     SETTINGS.with(|s| s.borrow_mut().xrc_canister_id = Some(xrc_id));
 }
 
 #[update]
 fn set_collateral_params(ratio_bps: u16, usd_cents: u32) {
-    assert_local_testing_enabled();
+    assert_controller();
     SETTINGS.with(|s| {
         let mut st = s.borrow_mut();
         st.collateral.ratio_bps = ratio_bps;
@@ -1767,9 +1769,14 @@ async fn backend_http_request(
     }
 }
 
+fn assert_controller() {
+    if !ic_cdk::api::is_controller(&caller()) {
+        ic_cdk::trap("unauthorized");
+    }
+}
+
 fn assert_local_testing_enabled() {
-    let is_local = SETTINGS.with(|s| s.borrow().local_testing_mode);
-    if !is_local {
+    if !SETTINGS.with(|s| s.borrow().local_testing_mode) {
         ic_cdk::trap("configuration_locked");
     }
 }
@@ -2367,6 +2374,12 @@ async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
         inputs_override: override_payload.as_ref().map(|p| p.inputs.clone()),
         outputs_override_json: override_payload.as_ref().map(|p| p.outputs_json.clone()),
     };
+    ic_cdk::println!(
+        "[build_psbt] backend payload keys -> protocol={}, oracle={}, liquidation={}",
+        backend_request.protocol_public_key,
+        backend_request.oracle_public_key,
+        backend_request.liquidation_public_key
+    );
     let body = serde_json::to_vec(&backend_request).map_err(|err| err.to_string())?;
     let mut headers = vec![HttpHeader {
         name: "Content-Type".into(),
