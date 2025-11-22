@@ -417,7 +417,14 @@ export async function buildMintPsbt(body: MintRequestBody): Promise<MintPsbtResu
       )
     });
     for (const [address, amount] of flattened.entries()) {
-      orderedOutputs.push({ [address]: amount });
+      if (address === body.payment.address) {
+        orderedOutputs.push({ [address]: amount });
+      } else {
+        console.info('[mintService] dropping unexpected extra override output', {
+          address,
+          amount
+        });
+      }
     }
     overrideOutputs = JSON.stringify(orderedOutputs);
   }

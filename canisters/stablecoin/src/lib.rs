@@ -2234,6 +2234,7 @@ struct BackendFinalizeMintResponse {
 
 #[update]
 async fn build_psbt(request: BuildPsbtRequest) -> Result<MintResponse, String> {
+    ic_cdk::println!("[build_psbt] build marker 2025-11-22A");
     let settings = SETTINGS.with(|s| s.borrow().clone());
     let config = settings.backend.clone();
     if config.base_url.is_empty() {
