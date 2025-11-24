@@ -12,6 +12,11 @@ frontend/.env
 .env.local
 .env.*.local
 
+# Backend runtime data
+backend/data/*.json
+backend/data/*.sqlite
+backend/data/*.db
+
 # Local build artifacts
 target-local/
 

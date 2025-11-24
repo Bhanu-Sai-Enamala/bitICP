@@ -1,4 +1,7 @@
 {
+  "frontend": {
+    "ic": "2e36g-4qaaa-aaaae-acxka-cai"
+  },
   "stablecoin": {
     "ic": "hnpl7-tyaaa-aaaae-acvnq-cai"
   }

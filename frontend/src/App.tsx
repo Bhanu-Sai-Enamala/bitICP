@@ -165,7 +165,7 @@ const DEFAULT_CONFIRMATION_TARGET = Number(
 );
 const FIXED_MINT_TOKENS = 10;
 const TARGET_COLLATERAL_RATIO = 130;
-const RUNE_SYMBOL = 'USDBZ';
+const RUNE_SYMBOL = 'bUSD';
 const ENABLE_SIWB =
   (import.meta.env.VITE_ENABLE_SIWB ?? 'true').toLowerCase() !== 'false';
 const REQUIRE_XVERSE =
@@ -424,7 +424,7 @@ useEffect(() => {
     }
 
     const response = (await actor.build_psbt({
-      rune: 'USDBZ•STABLECOIN',
+      rune: 'bUSD•STABLECOIN',
       fee_rate: 12,
       fee_recipient: DEFAULT_FEE_RECIPIENT,
       ordinals: {
@@ -1082,7 +1082,7 @@ useEffect(() => {
         <div className="sigil" />
         <div className="brand-text">
           <span>BTC Stablecoin</span>
-          <small>USDBZ • Bitcoin collateral managed on ICP</small>
+          <small>bUSD • Bitcoin collateral managed on ICP</small>
         </div>
       </div>
       <div className="wallet">
@@ -1106,9 +1106,9 @@ useEffect(() => {
         {header}
         <section className="hero">
           <div>
-            <h1>BTC collateral, USDBZ on ICP.</h1>
+            <h1>BTC collateral, bUSD on ICP.</h1>
             <p>
-              USDBZ keeps every vault overcollateralized on-chain, combining Bitcoin custody with ICP’s
+              bUSD keeps every vault overcollateralized on-chain, combining Bitcoin custody with ICP’s
               throughput. Mint 10 tokens per vault and withdraw once six confirmations land.
             </p>
             <div className="hero-actions">
@@ -1398,7 +1398,7 @@ useEffect(() => {
                       <div key={`${vault.id}-${vault.createdAtMs}`} className="vault-card">
                         <div className="vault-card-header">
                           <div>
-                            <div className="vault-title">USDBZ Vault • {index + 1}</div>
+                            <div className="vault-title">bUSD Vault • {index + 1}</div>
                             <div className="vault-subtitle">{mintedTimestamp}</div>
                           </div>
                           <div className={statusClass}>{statusLabel}</div>

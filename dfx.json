@@ -5,7 +5,7 @@
       "type": "custom",
       "candid": "canisters/stablecoin/stablecoin.did",
       "wasm": "canisters/target/wasm32-unknown-unknown/release/stablecoin.wasm",
-      "build": "bash scripts/build_rust_canister.sh stablecoin",
+      "build": "bash -lc 'cd canisters && cargo build --target wasm32-unknown-unknown --release -p stablecoin'",
       "metadata": [
         {
           "name": "candid:service",
